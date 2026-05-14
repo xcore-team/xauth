@@ -1,0 +1,81 @@
+name: auth
+version: 1.0.0
+author: xcore
+description: >
+  Plugin d'authentification enterprise — multi-tenant, RBAC, audit log,
+  invitations par lien, MFA TOTP, JWT RS256, OAuth (Google/GitHub/Discord/Microsoft).
+
+execution_mode: trusted
+entry_point: src/main.py
+framework_version: ">=2.0.0"
+
+# ── Variables d'environnement ─────────────────────────────────────────────────
+# Chargées depuis app/xauth/.env avant résolution des ${VAR}
+
+envconfiguration:
+  inject: true
+  env_file: .env
+
+env:
+  APP_NAME: "${XAUTH_APP_NAME}"
+  
+  # admin 
+  ADMIN_EMAIL: ${ADMIN_EMAIL}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+  ADMIN_TENANT_SLUG: ${ADMIN_TENANT_SLUG}
+  ADMIN_TENANT_NAME: ${ADMIN_TENANT_NAME}
+  ADMIN_ROLE_NAME: ${ADMIN_ROLE_NAME}
+  USER_ROLE_NAME: ${USER_ROLE_NAME}
+
+
+  # JWT
+  JWT_PRIVATE_KEY_PATH: "${XAUTH_JWT_PRIVATE_KEY_PATH}"
+  JWT_PUBLIC_KEY_PATH: "${XAUTH_JWT_PUBLIC_KEY_PATH}"
+  JWT_ACCESS_EXPIRE_MINUTES: "${XAUTH_JWT_ACCESS_EXPIRE_MINUTES}"
+  JWT_REFRESH_EXPIRE_DAYS: "${XAUTH_JWT_REFRESH_EXPIRE_DAYS}"
+
+  # SMTP
+  SMTP_HOST: "${XAUTH_SMTP_HOST}"
+  SMTP_PORT: "${XAUTH_SMTP_PORT}"
+  SMTP_USER: "${XAUTH_SMTP_USER}"
+  SMTP_PASSWORD: "${XAUTH_SMTP_PASSWORD}"
+  SMTP_FROM: "${XAUTH_SMTP_FROM}"
+  SMTP_FROM_NAME: "${XAUTH_SMTP_FROM_NAME}"
+  SMTP_USE_TLS: "${XAUTH_SMTP_USE_TLS}"
+
+  # URL de base — liens d'invitation et redirects OAuth
+  APP_BASE_URL: "${XAUTH_APP_BASE_URL}"
+
+  # OAuth providers — optionnels (provider désactivé si clés absentes)
+  OAUTH_GOOGLE_CLIENT_ID: "${XAUTH_OAUTH_GOOGLE_CLIENT_ID}"
+  OAUTH_GOOGLE_CLIENT_SECRET: "${XAUTH_OAUTH_GOOGLE_CLIENT_SECRET}"
+  OAUTH_GITHUB_CLIENT_ID: "${XAUTH_OAUTH_GITHUB_CLIENT_ID}"
+  OAUTH_GITHUB_CLIENT_SECRET: "${XAUTH_OAUTH_GITHUB_CLIENT_SECRET}"
+  OAUTH_DISCORD_CLIENT_ID: "${XAUTH_OAUTH_DISCORD_CLIENT_ID}"
+  OAUTH_DISCORD_CLIENT_SECRET: "${XAUTH_OAUTH_DISCORD_CLIENT_SECRET}"
+  OAUTH_MICROSOFT_CLIENT_ID: "${XAUTH_OAUTH_MICROSOFT_CLIENT_ID}"
+  OAUTH_MICROSOFT_CLIENT_SECRET: "${XAUTH_OAUTH_MICROSOFT_CLIENT_SECRET}"
+
+# ── Permissions inter-plugins ─────────────────────────────────────────────────
+permissions:
+  - resource: "registry"
+    actions: ["*"]
+    effect: allow
+
+# ── Ressources ────────────────────────────────────────────────────────────────
+resources:
+  timeout_seconds: 30
+  max_memory_mb: 256
+  rate_limit:
+    calls: 1000
+    period_seconds: 60
+
+# ── Runtime ───────────────────────────────────────────────────────────────────
+runtime:
+  health_check:
+    enabled: true
+    interval_seconds: 60
+    timeout_seconds: 5
+  retry:
+    max_attempts: 3
+    backoff_seconds: 2.0
