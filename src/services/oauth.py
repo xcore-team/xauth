@@ -12,8 +12,11 @@ from ..models.session import Session
 from ..models.user import User
 from ..providers.base import OAuthProvider, OAuthUserInfo
 from ..repositories.oauth import OAuthAccountRepository
+from ..repositories.rbac import RoleRepository
 from ..repositories.session import SessionRepository
-from ..repositories.user import UserRepository
+from ..repositories.tenant import TenantRepository
+from ..repositories.user import TenantMemberRepository, UserRepository
+from ..models.user import TenantMember
 from .token import TokenService
 
 # TTL du state CSRF en secondes
@@ -239,6 +242,21 @@ class OAuthService:
         user = User(email=info.email, hashed_password=None, is_active=True)
         user._is_new = True  # flag pour la réponse
         await user_repo.save(user)
+
+        # Assigner au tenant "default" comme le register classique
+        tenant_repo = TenantRepository(self._session)
+        tenant = await tenant_repo.get_by_slug("default")
+        if tenant:
+            role_repo = RoleRepository(self._session)
+            global_roles = await role_repo.list_for_tenant(None)
+            user_role = next((r for r in global_roles if r.name == "user"), None)
+            member_repo = TenantMemberRepository(self._session)
+            membership = TenantMember(
+                user_id=user.id,
+                tenant_id=tenant.id,
+                role_id=user_role.id if user_role else None,
+            )
+            await member_repo.save(membership)
 
         new_account = OAuthAccount(
             user_id=user.id,
