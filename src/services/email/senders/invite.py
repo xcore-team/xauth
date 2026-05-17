@@ -6,23 +6,21 @@ from ..base import EmailTransport
 class InviteEmailSender(EmailTransport):
     """Emails liés aux invitations."""
 
-    async def send_invitation(
+    def send_invitation(
         self,
         to: str,
         invite_token: str,
-        tenant_name: str,
-        invited_by: str,
-        expires_hours: int = 72,
+        inviter_name: str,
+        expires_days: int = 3,
     ) -> bool:
-        accept_url = f"{self.base_url}/xauth/invites/accept?token={invite_token}"
-        return await self.send(
+        invite_url = f"{self.base_url}/xauth/invites/accept?token={invite_token}"
+        return self.queue(
             to=to,
-            subject=f"Vous êtes invité à rejoindre {tenant_name}",
+            subject=f"Invitation à rejoindre {self.app_name}",
             template="invitation",
             context={
-                "tenant_name": tenant_name,
-                "invited_by": invited_by,
-                "accept_url": accept_url,
-                "expires_hours": expires_hours,
+                "inviter_name": inviter_name,
+                "invite_url": invite_url,
+                "expires_in_days": expires_days,
             },
         )

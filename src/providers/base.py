@@ -66,7 +66,17 @@ class OAuthProvider:
                 timeout=10,
             )
             resp.raise_for_status()
-            return resp.json()
+            try:
+                payload = resp.json()
+            except Exception:
+                raise ValueError(
+                    f"Réponse non-JSON du provider (HTTP {resp.status_code}): {resp.text[:200]}"
+                )
+            # GitHub returns 200 with {"error": "..."} on failure
+            if "error" in payload:
+                desc = payload.get("error_description") or payload["error"]
+                raise ValueError(f"Échange de code refusé par le provider : {desc}")
+            return payload
 
     async def get_user_info(self, access_token: str) -> OAuthUserInfo:
         raise NotImplementedError

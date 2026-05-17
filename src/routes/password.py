@@ -71,7 +71,7 @@ def password_router(
             token = await svc.create_reset_token(body.email)
 
         if token:
-            await email_service.password.reset(
+            email_service.password.reset(
                 to=body.email,
                 username=body.email,
                 reset_token=token,
@@ -92,11 +92,7 @@ def password_router(
                 raise HTTPException(status_code=400, detail=str(exc))
 
         if email:
-            email_service.password.queue(
-                to=email,
-                subject="Votre mot de passe a été modifié",
-                body="Votre mot de passe a été réinitialisé avec succès.",
-            )
+            email_service.password.changed(to=email, username=email)
 
         return {"detail": "Mot de passe réinitialisé avec succès."}
 

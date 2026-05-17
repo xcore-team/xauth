@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from typing import Any
 
+import logging as _logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+_log = _logging.getLogger("hub.xauth.oauth")
+from fastapi.responses import RedirectResponse
+from urllib.parse import urlencode
 from pydantic import BaseModel
 from xcore.kernel.api import AuthPayload, get_current_user
 
 from ..providers.base import OAuthProvider
+from ..services.email import AuthEmailService
 from ..services.oauth import OAuthService
 from ..services.token import TokenService
 
@@ -21,6 +28,7 @@ def oauth_router(
     cache: Any,
     token_service: TokenService,
     providers: dict[str, OAuthProvider],
+    email_service: AuthEmailService | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/oauth", tags=["oauth"])
 
@@ -43,10 +51,11 @@ def oauth_router(
         provider: str,
         tenant_id: str | None = None,
         redirect: str | None = None,
+        direct: bool = False,
     ) -> Any:
         """
         Retourne l'URL d'autorisation du provider.
-        Le client redirige l'utilisateur vers cette URL.
+        Avec direct=true, redirige directement (pour les liens navigateur).
         """
         async with db.session() as session:
             svc = _svc(session)
@@ -54,6 +63,8 @@ def oauth_router(
                 url = await svc.get_auth_url(
                     provider, tenant_id=tenant_id, post_login_redirect=redirect
                 )
+                if direct:
+                    return RedirectResponse(url)
                 return {"auth_url": url, "provider": provider}
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc))
@@ -75,11 +86,32 @@ def oauth_router(
             try:
                 result = await svc.handle_callback(provider, code, state, ip_address=ip)
                 await session.commit()
+
+                if result.get("is_new_user") and email_service:
+                    user_email = result.get("email", "")
+                    if user_email:
+                        username = user_email.split("@")[0]
+                        email_service.auth.welcome(to=user_email, username=username)
+
+                redirect_url = result.get("post_login_redirect")
+                if redirect_url:
+                    params = {
+                        "access_token": result["access_token"],
+                        "refresh_token": result.get("refresh_token", ""),
+                        "provider": provider,
+                        "provider_token": result.get("provider_token", ""),
+                    }
+                    sep = "&" if "?" in redirect_url else "?"
+                    return RedirectResponse(f"{redirect_url}{sep}{urlencode(params)}")
                 return result
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc))
             except Exception as exc:
-                raise HTTPException(status_code=502, detail=f"Erreur provider : {exc}")
+                _log.exception("OAuth callback error [%s]", type(exc).__name__)
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Erreur provider [{type(exc).__name__}]: {exc!r}",
+                )
 
     @router.post("/{provider}/link")
     async def link_provider(
@@ -144,5 +176,23 @@ def oauth_router(
                 }
                 for a in accounts
             ]
+
+    @router.get("/me/token/{provider}")
+    async def get_provider_token(
+        provider: str,
+        user: AuthPayload = Depends(get_current_user),
+    ) -> Any:
+        """Retourne le token OAuth stocké pour un provider donné (usage interne services)."""
+        async with db.session() as session:
+            from ..repositories.oauth import OAuthAccountRepository
+
+            repo = OAuthAccountRepository(session)
+            account = await repo.get_by_user_and_provider(user["sub"], provider)
+            if account is None or not account.provider_token:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Aucun token {provider} trouvé. Reconnectez-vous via OAuth.",
+                )
+            return {"provider": provider, "token": account.provider_token}
 
     return router

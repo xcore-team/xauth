@@ -5,7 +5,7 @@ from typing import Any
 from xcore.kernel.api.auth import AuthPayload
 
 from .services.token import TokenService
-
+from .repositories.user import UserRepository
 
 class XAuthBackend:
     """
@@ -70,8 +70,6 @@ class XAuthBackend:
                     memberships = await member_repo.get_memberships_for_user(user_id)
                     if memberships:
                         tenant_id = memberships[0].tenant_id
-                
-                print(tenant_id)
 
                 if tenant_id:
                     svc = RBACService(session, cache=self._cache)
@@ -79,12 +77,21 @@ class XAuthBackend:
                     roles = await svc.get_roles_for_user(user_id, tenant_id)
         except Exception:
             pass
+
+        async with self._db.session() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get(user_id)
+            if user is None:
+                return None
         
         return AuthPayload(
             sub=user_id,
             roles=roles,
             permissions=permissions,
-            user={"tenant_id": tenant_id},
+            user={
+                "email": user.email,
+                "tenant_id": tenant_id,
+            }
         )
 
     async def has_permission(self, payload: AuthPayload, permission: str) -> bool:

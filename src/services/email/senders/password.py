@@ -6,15 +6,9 @@ from ..base import EmailTransport
 class PasswordEmailSender(EmailTransport):
     """Emails liés à la gestion des mots de passe."""
 
-    async def reset(
-        self,
-        to: str,
-        username: str,
-        reset_token: str,
-        expires_minutes: int = 30,
-    ) -> bool:
+    def reset(self, to: str, username: str, reset_token: str, expires_minutes: int = 30) -> bool:
         reset_url = f"{self.base_url}/xauth/password/reset?token={reset_token}"
-        return await self.send(
+        return self.queue(
             to=to,
             subject="Réinitialisation de votre mot de passe",
             template="password_reset",
@@ -25,8 +19,8 @@ class PasswordEmailSender(EmailTransport):
             },
         )
 
-    async def changed(self, to: str, username: str) -> bool:
-        return await self.send(
+    def changed(self, to: str, username: str) -> bool:
+        return self.queue(
             to=to,
             subject="Votre mot de passe a été modifié",
             template="password_changed",

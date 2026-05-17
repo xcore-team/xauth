@@ -9,15 +9,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.oauth import OAuthAccount
 from ..models.session import Session
-from ..models.user import User
+from ..models.user import TenantMember, User
 from ..providers.base import OAuthProvider, OAuthUserInfo
 from ..repositories.oauth import OAuthAccountRepository
+from ..repositories.rbac import RoleRepository
 from ..repositories.session import SessionRepository
-from ..repositories.user import UserRepository
+from ..repositories.user import TenantMemberRepository, UserRepository
+from ..repositories.tenant import TenantRepository
 from .token import TokenService
 
 # TTL du state CSRF en secondes
-_STATE_TTL = 600
+_STATE_TTL = 1800
 _STATE_KEY_PREFIX = "xauth:oauth:state:"
 
 
@@ -90,7 +92,7 @@ class OAuthService:
             raise ValueError("State OAuth invalide ou expiré.")
         await self._cache.delete(state_key)
 
-        state_data = json.loads(raw)
+        state_data = raw if isinstance(raw, dict) else json.loads(raw)
         if state_data.get("provider") != provider_name:
             raise ValueError("State OAuth : provider mismatch.")
 
@@ -105,8 +107,8 @@ class OAuthService:
         # Récupérer le profil utilisateur
         user_info = await provider.get_user_info(access_token)
 
-        # Find-or-create
-        user = await self._find_or_create_user(user_info)
+        # Find-or-create (stores provider_token on the OAuthAccount)
+        user = await self._find_or_create_user(user_info, provider_token=access_token)
 
         # Créer la session xauth (refresh token rotatif)
         refresh_plain = self._token.create_refresh_token()
@@ -133,8 +135,10 @@ class OAuthService:
             "refresh_token": refresh_plain,
             "token_type": "bearer",
             "user_id": user.id,
+            "email": user.email,
             "tenant_id": tenant_id,
             "provider": provider_name,
+            "provider_token": token_data.get("access_token"),
             "is_new_user": getattr(user, "_is_new", False),
             "post_login_redirect": state_data.get("redirect"),
         }
@@ -173,6 +177,7 @@ class OAuthService:
             )
 
         if existing:
+            existing.provider_token = access_token
             return existing
 
         account = OAuthAccount(
@@ -182,6 +187,7 @@ class OAuthService:
             provider_email=user_info.email,
             provider_name=user_info.name,
             provider_avatar=user_info.avatar_url,
+            provider_token=access_token,
         )
         return await oauth_repo.save(account)
 
@@ -209,21 +215,26 @@ class OAuthService:
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    async def _find_or_create_user(self, info: OAuthUserInfo) -> User:
+    async def _find_or_create_user(
+        self, info: OAuthUserInfo, provider_token: Optional[str] = None
+    ) -> User:
         oauth_repo = OAuthAccountRepository(self._session)
         user_repo = UserRepository(self._session)
 
         # 1. Chercher par (provider, provider_user_id)
         account = await oauth_repo.get_by_provider(info.provider, info.provider_user_id)
         if account:
+            # Rafraîchir le token à chaque connexion
+            if provider_token:
+                account.provider_token = provider_token
             user = await user_repo.get(account.user_id)
             if user:
+                await self._assign_default_role(user.id)
                 return user
 
         # 2. Chercher un user existant par email
         user = await user_repo.get_by_email(info.email)
         if user:
-            # Lier ce provider au compte existant
             new_account = OAuthAccount(
                 user_id=user.id,
                 provider=info.provider,
@@ -231,8 +242,11 @@ class OAuthService:
                 provider_email=info.email,
                 provider_name=info.name,
                 provider_avatar=info.avatar_url,
+                provider_token=provider_token,
             )
             await oauth_repo.save(new_account)
+            # S'assurer que ce user a bien un rôle (peut manquer si créé via autre flow)
+            await self._assign_default_role(user.id)
             return user
 
         # 3. Créer un nouveau user
@@ -247,6 +261,37 @@ class OAuthService:
             provider_email=info.email,
             provider_name=info.name,
             provider_avatar=info.avatar_url,
+            provider_token=provider_token,
         )
         await oauth_repo.save(new_account)
+
+        # Assigner le rôle "user" dans le tenant par défaut
+        await self._assign_default_role(user.id)
+
         return user
+
+    async def _assign_default_role(self, user_id: str) -> None:
+        """Crée un TenantMember avec le rôle 'user' global dans le tenant par défaut."""
+        try:
+            tenant_repo = TenantRepository(self._session)
+            tenant = await tenant_repo.get_by_slug("default")
+            if tenant is None:
+                return
+
+            role_repo = RoleRepository(self._session)
+            roles = await role_repo.list_for_tenant(None)
+            user_role = next((r for r in roles if r.name == "user"), None)
+
+            member_repo = TenantMemberRepository(self._session)
+            existing = await member_repo.get_membership(user_id, tenant.id)
+            if existing is not None:
+                return
+
+            membership = TenantMember(
+                user_id=user_id,
+                tenant_id=tenant.id,
+                role_id=user_role.id if user_role else None,
+            )
+            await member_repo.save(membership)
+        except Exception:
+            pass  # non-bloquant — le user est créé, le rôle peut être assigné manuellement
