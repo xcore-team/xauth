@@ -64,3 +64,25 @@ class TokenService:
         if payload.get("type") != "access":
             raise ValueError("Ce token n'est pas un access token")
         return payload
+
+    def create_mfa_challenge_token(self, user_id: str, tenant_id: Optional[str] = None) -> str:
+        now = datetime.now(tz=timezone.utc)
+        payload: dict[str, Any] = {
+            "sub": user_id,
+            "jti": str(uuid4()),
+            "iat": now,
+            "exp": now + timedelta(minutes=5),
+            "type": "mfa_challenge",
+        }
+        if tenant_id:
+            payload["tenant_id"] = tenant_id
+        return jwt.encode(payload, self._private_key, algorithm=ALGORITHM)
+
+    def verify_mfa_challenge_token(self, token: str) -> dict[str, Any]:
+        try:
+            payload = jwt.decode(token, self._public_key, algorithms=[ALGORITHM])
+        except JWTError as exc:
+            raise ValueError(f"Token invalide : {exc}") from exc
+        if payload.get("type") != "mfa_challenge":
+            raise ValueError("Ce token n'est pas un challenge MFA")
+        return payload
