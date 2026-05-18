@@ -62,7 +62,7 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
         _migrations_dir = Path(__file__).parent.parent / "migrations"
         runner = MigrationRunner(db_url=str(db.engine.url), migrations_dir=_migrations_dir)
         try:
-            await runner.init(autogenerate=True, message="first_initialisation")
+            await runner.init(autogenerate=False, message="first_initialisation")
             await runner.upgrade()
         except Exception as exc:
             _logger.warning("[xauth] Migration upgrade ignorée : %s", exc)
@@ -119,18 +119,25 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
         )
         self.app.include_router(tenants_router(db))
         self.app.include_router(rbac_router(db, cache=cache))
-        self.app.include_router(mfa_router(db))
+        self.app.include_router(mfa_router(db, self._token_service))
         self.app.include_router(invites_router(db, self._email_service, self._events))
         self.app.include_router(audit_router(db))
         self.app.include_router(
-            oauth_router(db, cache, self._token_service, oauth_providers)
+            oauth_router(db, cache, self._token_service, oauth_providers, self._email_service)
         )
         self.app.include_router(
             password_router(db, cache, self._email_service, self._events)
         )
 
         from .services.seed import run_seed
-        await run_seed(db)
+        await run_seed(db, UserRootSchemas(
+            ADMIN_EMAIL=self.ctx.env['ADMIN_EMAIL'],
+            ADMIN_PASSWORD=self.ctx.env['ADMIN_PASSWORD'],
+            ADMIN_TENANT_SLUG=self.ctx.env['ADMIN_TENANT_SLUG'],
+            ADMIN_TENANT_NAME=self.ctx.env['ADMIN_TENANT_NAME'],
+            ADMIN_ROLE_NAME=self.ctx.env['ADMIN_ROLE_NAME'],
+            USER_ROLE_NAME=self.ctx.env['USER_ROLE_NAME'],
+        ))
 
     async def on_unload(self) -> None:
         unregister_auth_backend()
@@ -167,10 +174,9 @@ def _auth_router_with_db(
                 )
                 await session.commit()
                 await session.refresh(user)
-                email_service.auth.queue(
+                email_service.auth.welcome(
                     to=user.email,
-                    subject=f"Bienvenue sur {email_service.auth.app_name}",
-                    body=f"Bienvenue {user.email} !",
+                    username=user.email.split("@")[0],
                 )
                 return user
             except ValueError as exc:
@@ -267,7 +273,7 @@ def _build_oauth_providers(env: dict) -> dict[str, OAuthProvider]:
         client_id = env.get(id_key, "")
         client_secret = env.get(secret_key, "")
         if client_id and client_secret:
-            redirect_uri = f"{base_url}/xauth/oauth/{name}/callback"
+            redirect_uri = f"{base_url}/app/auth/oauth/{name}/callback"
             providers[name] = cls(client_id, client_secret, redirect_uri)
 
     return providers

@@ -265,6 +265,22 @@ class AuthService(AuthBackend):
             if membership is None:
                 raise ValueError("User is not a member of this tenant")
 
+        # ── MFA requis : retourner un challenge token (pas de vrais tokens) ────────
+        if user.mfa_enabled:
+            mfa_token = self._token.create_mfa_challenge_token(
+                user_id=user.id, tenant_id=tenant_id
+            )
+            return {
+                "access_token": "",
+                "refresh_token": "",
+                "token_type": "bearer",
+                "user_id": user.id,
+                "tenant_id": tenant_id,
+                "mfa_required": True,
+                "mfa_token": mfa_token,
+                "tenants": None,
+            }
+
         # ── Flow normal : émission des tokens ─────────────────────────────────────
         access_token = self._token.create_access_token(user_id=user.id, tenant_id=tenant_id)
         refresh_token_plain = self._token.create_refresh_token()
@@ -293,7 +309,8 @@ class AuthService(AuthBackend):
             "token_type": "bearer",
             "user_id": user.id,
             "tenant_id": tenant_id,
-            "mfa_required": user.mfa_enabled,
+            "mfa_required": False,
+            "mfa_token": None,
             "tenants": None,
         }
 

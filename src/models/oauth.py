@@ -27,6 +27,7 @@ class OAuthAccount(Base):
     provider_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     provider_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     provider_avatar: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    provider_token: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     user: Mapped["User"] = relationship("User", back_populates="oauth_accounts")

@@ -38,12 +38,11 @@ def invites_router(
                 await session.refresh(invite)
 
                 # Envoyer l'email d'invitation
-                await email_service.invite.send_invitation(
+                email_service.invite.send_invitation(
                     to=invite.email,
                     invite_token=invite.token,
-                    tenant_name=body.tenant_id,
-                    invited_by=user["sub"],
-                    expires_hours=body.expires_hours,
+                    inviter_name=user.get("email", user["sub"]),
+                    expires_days=max(1, body.expires_hours // 24),
                 )
 
                 return invite

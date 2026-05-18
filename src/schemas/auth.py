@@ -36,6 +36,11 @@ class LoginRequest(BaseModel):
     tenant_id: Optional[str] = None
 
 
+class MfaVerifyLoginRequest(BaseModel):
+    mfa_token: str
+    code: str
+
+
 class RefreshRequest(BaseModel):
     refresh_token: str
 
@@ -51,6 +56,7 @@ class TokenResponse(BaseModel):
     user_id: Optional[str] = None
     tenant_id: Optional[str] = None
     mfa_required: bool = False
+    mfa_token: Optional[str] = None
     tenants: Optional[list[TenantInfo]] = None  # ← présent uniquement si multi-tenant
 
 
