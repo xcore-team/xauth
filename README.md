@@ -227,6 +227,12 @@ Tous les endpoints sont préfixés `/xauth` par xcore.
 
 ---
 
+## Flux de connexion
+
+Les flux complets (séquences, états des tokens, OAuth, réinitialisation de mot de passe) sont documentés dans [docs/flows.md](docs/flows.md).
+
+---
+
 ## Flow MFA
 
 Quand `mfa_enabled = true` sur l'utilisateur, le login se fait en deux étapes :
