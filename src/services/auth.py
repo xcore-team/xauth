@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+
+_logger = logging.getLogger(__name__)
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from xcore.kernel.api import AuthBackend
@@ -65,11 +68,13 @@ class AuthService:
         token_service: TokenService,
         events: XAuthEvents | None = None,
         cache: Any = None,
+        user_role_name: str = "user",
     ) -> None:
         self._session = session
         self._token = token_service
         self._events = events
         self._cache = cache
+        self._user_role_name = user_role_name
 
     async def register(
         self,
@@ -108,8 +113,13 @@ class AuthService:
         if tenant:
             role_repo = RoleRepository(self._session)
             global_roles = await role_repo.list_for_tenant(None)
-            user_role = next((r for r in global_roles if r.name == "user"), None)
-
+            user_role = next((r for r in global_roles if r.name == self._user_role_name), None)
+            if user_role is None:
+                _logger.warning(
+                    "[xauth] Rôle '%s' introuvable — membership créé sans rôle pour %s",
+                    self._user_role_name,
+                    email,
+                )
             member_repo = TenantMemberRepository(self._session)
             membership = TenantMember(
                 user_id=user.id,

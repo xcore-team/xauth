@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+
+_logger = logging.getLogger(__name__)
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,11 +39,13 @@ class OAuthService:
         token_service: TokenService,
         cache: Any,
         providers: dict[str, OAuthProvider],
+        user_role_name: str = "user",
     ) -> None:
         self._session = session
         self._token = token_service
         self._cache = cache
         self._providers = providers
+        self._user_role_name = user_role_name
 
     # ── Providers registry ────────────────────────────────────────────────────
 
@@ -249,7 +254,13 @@ class OAuthService:
         if tenant:
             role_repo = RoleRepository(self._session)
             global_roles = await role_repo.list_for_tenant(None)
-            user_role = next((r for r in global_roles if r.name == "user"), None)
+            user_role = next((r for r in global_roles if r.name == self._user_role_name), None)
+            if user_role is None:
+                _logger.warning(
+                    "[xauth] Rôle '%s' introuvable — membership OAuth créé sans rôle pour %s",
+                    self._user_role_name,
+                    info.email,
+                )
             member_repo = TenantMemberRepository(self._session)
             membership = TenantMember(
                 user_id=user.id,
