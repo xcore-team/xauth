@@ -148,7 +148,6 @@ class RBACService:
             return []
         role_repo = RoleRepository(self._session)
         role = await role_repo.get(membership.role_id)
-        print(',---------------------------> ', role)
         if role is None:
             return []
 

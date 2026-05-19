@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from xcore.kernel.api.auth import AuthPayload
 
 from .services.token import TokenService
+from .repositories.user import UserRepository
 
 
 class XAuthBackend:
@@ -43,10 +45,7 @@ class XAuthBackend:
 
         # 3. Query param (WebSocket, liens)
         token = request.query_params.get("access_token")
-        if token:
-            return token
-
-        return None
+        return token or  None
 
     async def decode_token(self, token: str) -> AuthPayload | None:
         try:
@@ -54,12 +53,18 @@ class XAuthBackend:
         except ValueError:
             return None
 
+        # Vérifier que le JTI n'est pas blacklisté (logout effectué)
+        jti = claims.get("jti")
+        if jti and self._cache:
+            with contextlib.suppress(Exception):
+                if await self._cache.get(f"xauth:jti_bl:{jti}"):
+                    return None
         user_id: str = claims["sub"]
         tenant_id: str | None = claims.get("tenant_id")
         permissions: list[str] = []
 
         roles: list[str] = []
-        try:
+        with contextlib.suppress(Exception):
             async with self._db.session() as session:
                 from .repositories.user import TenantMemberRepository
                 from .services.rbac import RBACService
@@ -70,21 +75,25 @@ class XAuthBackend:
                     memberships = await member_repo.get_memberships_for_user(user_id)
                     if memberships:
                         tenant_id = memberships[0].tenant_id
-                
-                print(tenant_id)
 
                 if tenant_id:
                     svc = RBACService(session, cache=self._cache)
                     permissions = await svc.get_permissions_for_user(user_id, tenant_id)
                     roles = await svc.get_roles_for_user(user_id, tenant_id)
-        except Exception:
-            pass
-        
+        async with self._db.session() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get(user_id)
+            if user is None:
+                return None
+
         return AuthPayload(
             sub=user_id,
             roles=roles,
             permissions=permissions,
-            user={"tenant_id": tenant_id},
+            user={
+                "email": user.email,
+                "tenant_id": tenant_id
+            },
         )
 
     async def has_permission(self, payload: AuthPayload, permission: str) -> bool:

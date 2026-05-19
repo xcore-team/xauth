@@ -35,11 +35,13 @@ class TokenService:
         user_id: str,
         tenant_id: Optional[str] = None,
         extra: Optional[dict[str, Any]] = None,
-    ) -> str:
+    ) -> tuple[str, str]:
+        """Retourne (token_jwt, jti)."""
+        jti = str(uuid4())
         now = datetime.now(tz=timezone.utc)
         payload: dict[str, Any] = {
             "sub": user_id,
-            "jti": str(uuid4()),
+            "jti": jti,
             "iat": now,
             "exp": now + timedelta(minutes=self._access_expire),
             "type": "access",
@@ -48,7 +50,7 @@ class TokenService:
             payload["tenant_id"] = tenant_id
         if extra:
             payload.update(extra)
-        return jwt.encode(payload, self._private_key, algorithm=ALGORITHM)
+        return jwt.encode(payload, self._private_key, algorithm=ALGORITHM), jti
 
     def create_refresh_token(self) -> str:
         return secrets.token_urlsafe(64)

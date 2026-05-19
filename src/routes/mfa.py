@@ -65,4 +65,18 @@ def mfa_router(db: Any) -> APIRouter:
             await svc.disable_mfa(user["sub"])
             await session.commit()
 
+    @router.post("/backup-codes/regenerate")
+    async def regenerate_backup_codes(
+        user: AuthPayload = Depends(get_current_user),
+    ) -> Any:
+        """Régénère les backup codes (invalide les anciens). Affichés une seule fois."""
+        async with db.session() as session:
+            svc = MFAService(session)
+            try:
+                codes = await svc.regenerate_backup_codes(user["sub"])
+                await session.commit()
+                return {"backup_codes": codes}
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+
     return router

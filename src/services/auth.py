@@ -12,8 +12,11 @@ from ..models.user import TenantMember, User
 from ..repositories.session import SessionRepository
 from ..repositories.tenant import TenantRepository
 from ..repositories.user import TenantMemberRepository, UserRepository
+from .audit import AuditService
 from .events import XAuthEvents
 from .token import TokenService
+
+_JTI_BLACKLIST_PREFIX = "xauth:jti_bl:"
 
 
 def _get_password_context():
@@ -55,16 +58,18 @@ def _check_password_policy(
         raise ValueError("Password must contain at least one digit")
 
 
-class AuthService(AuthBackend):
+class AuthService:
     def __init__(
         self,
         session: AsyncSession,
         token_service: TokenService,
         events: XAuthEvents | None = None,
+        cache: Any = None,
     ) -> None:
         self._session = session
         self._token = token_service
         self._events = events
+        self._cache = cache
 
     async def register(
         self,
@@ -113,6 +118,15 @@ class AuthService(AuthBackend):
             )
             await member_repo.save(membership)
 
+        audit = AuditService(self._session)
+        await audit.log_event(
+            action="user.registered",
+            user_id=user.id,
+            tenant_id=tenant.id if tenant else None,
+            resource="user",
+            resource_id=user.id,
+        )
+
         if self._events:
             await self._events.user_registered(
                 user_id=user.id,
@@ -148,6 +162,10 @@ class AuthService(AuthBackend):
         new_refresh_plain = self._token.create_refresh_token()
         new_refresh_hashed = self._token.hash_token(new_refresh_plain)
 
+        access_token, jti = self._token.create_access_token(
+            user_id=session.user_id, tenant_id=session.tenant_id
+        )
+
         new_session = Session(
             user_id=session.user_id,
             tenant_id=session.tenant_id,
@@ -156,12 +174,9 @@ class AuthService(AuthBackend):
             ip_address=ip_address or session.ip_address,
             expires_at=datetime.now(tz=timezone.utc)
             + timedelta(days=self._token._refresh_expire),
+            last_jti=jti,
         )
         await session_repo.save(new_session)
-
-        access_token = self._token.create_access_token(
-            user_id=session.user_id, tenant_id=session.tenant_id
-        )
 
         if self._events:
             await self._events.session_refreshed(
@@ -179,6 +194,20 @@ class AuthService(AuthBackend):
         session_repo = SessionRepository(self._session)
         session = await session_repo.get_by_refresh_token(hashed)
         if session:
+            audit = AuditService(self._session)
+            await audit.log_event(
+                action="logout",
+                user_id=session.user_id,
+                tenant_id=session.tenant_id,
+                resource="session",
+                resource_id=session.id,
+            )
+            # Blacklister le dernier JTI émis pour invalider l'access token immédiatement
+            if self._cache and session.last_jti:
+                ttl = self._token._access_expire * 60 + 30
+                await self._cache.set(
+                    f"{_JTI_BLACKLIST_PREFIX}{session.last_jti}", "1", ttl=ttl
+                )
             session.is_revoked = True
             await self._session.flush()
             if self._events:
@@ -196,13 +225,17 @@ class AuthService(AuthBackend):
         ip_address: Optional[str] = None,
         device_fingerprint: Optional[str] = None,
     ) -> dict[str, Any]:
+        """login method """
+        audit = AuditService(self._session)
         user_repo = UserRepository(self._session)
         user = await user_repo.get_by_email(email)
         if user is None or not get_pwd_context().verify(password, user.hashed_password):
+            await audit.log_event(action="login.failed", ip_address=ip_address, metadata={"email": email, "reason": "invalid_credentials"})
             if self._events:
                 await self._events.user_login_failed(email=email, ip=ip_address, reason="invalid_credentials")
             raise ValueError("Invalid credentials")
         if not user.is_active:
+            await audit.log_event(action="login.failed", user_id=user.id, ip_address=ip_address, metadata={"reason": "account_inactive"})
             if self._events:
                 await self._events.user_login_failed(email=email, ip=ip_address, reason="account_inactive")
             raise ValueError("Account is inactive")
@@ -266,11 +299,34 @@ class AuthService(AuthBackend):
                 raise ValueError("User is not a member of this tenant")
 
         # ── Flow normal : émission des tokens ─────────────────────────────────────
-        access_token = self._token.create_access_token(user_id=user.id, tenant_id=tenant_id)
         refresh_token_plain = self._token.create_refresh_token()
         refresh_token_hashed = self._token.hash_token(refresh_token_plain)
-
         session_repo = SessionRepository(self._session)
+
+        # Si MFA activé → pas d'access token, on attend la vérification TOTP
+        if user.mfa_enabled:
+            session = Session(
+                user_id=user.id,
+                tenant_id=tenant_id,
+                refresh_token=refresh_token_hashed,
+                device_fingerprint=device_fingerprint,
+                ip_address=ip_address,
+                expires_at=datetime.now(tz=timezone.utc)
+                + timedelta(days=self._token._refresh_expire),
+            )
+            await session_repo.save(session)
+            return {
+                "access_token": "",
+                "refresh_token": refresh_token_plain,
+                "token_type": "bearer",
+                "user_id": user.id,
+                "tenant_id": tenant_id,
+                "mfa_required": True,
+                "tenants": None,
+            }
+
+        access_token, jti = self._token.create_access_token(user_id=user.id, tenant_id=tenant_id)
+
         session = Session(
             user_id=user.id,
             tenant_id=tenant_id,
@@ -279,9 +335,18 @@ class AuthService(AuthBackend):
             ip_address=ip_address,
             expires_at=datetime.now(tz=timezone.utc)
             + timedelta(days=self._token._refresh_expire),
+            last_jti=jti,
         )
         await session_repo.save(session)
 
+        await audit.log_event(
+            action="login.success",
+            user_id=user.id,
+            tenant_id=tenant_id,
+            ip_address=ip_address,
+            resource="session",
+            resource_id=session.id,
+        )
         if self._events:
             await self._events.user_login(
                 user_id=user.id, email=user.email, ip=ip_address, tenant_id=tenant_id
@@ -293,7 +358,7 @@ class AuthService(AuthBackend):
             "token_type": "bearer",
             "user_id": user.id,
             "tenant_id": tenant_id,
-            "mfa_required": user.mfa_enabled,
+            "mfa_required": False,
             "tenants": None,
         }
 
@@ -331,12 +396,12 @@ class AuthService(AuthBackend):
             raise ValueError("User is not a member of this tenant")
 
         # Mise à jour de la session avec le tenant choisi
-        session.tenant_id = tenant_id
-        await self._session.flush()
-
-        access_token = self._token.create_access_token(
+        access_token, jti = self._token.create_access_token(
             user_id=session.user_id, tenant_id=tenant_id
         )
+        session.tenant_id = tenant_id
+        session.last_jti = jti
+        await self._session.flush()
 
         if self._events:
             await self._events.user_login(
@@ -352,6 +417,54 @@ class AuthService(AuthBackend):
             "token_type": "bearer",
             "user_id": session.user_id,
             "tenant_id": tenant_id,
+            "mfa_required": False,
+            "tenants": None,
+        }
+
+    async def verify_mfa_and_issue_token(
+        self,
+        refresh_token: str,
+        totp_code: str,
+        ip_address: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Vérifie le code TOTP (ou backup code) après un login avec MFA activé.
+        Émet l'access token uniquement si le code est valide.
+        """
+        hashed = self._token.hash_token(refresh_token)
+        session_repo = SessionRepository(self._session)
+        session = await session_repo.get_by_refresh_token(hashed)
+
+        if session is None:
+            raise ValueError("Invalid or expired refresh token")
+
+        now = datetime.now(tz=timezone.utc)
+        expires = session.expires_at
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires < now:
+            session.is_revoked = True
+            await self._session.flush()
+            raise ValueError("Refresh token expired")
+
+        from .mfa import MFAService
+        mfa_svc = MFAService(self._session)
+        valid = await mfa_svc.verify_totp(session.user_id, totp_code)
+        if not valid:
+            raise ValueError("Invalid MFA code")
+
+        access_token, jti = self._token.create_access_token(
+            user_id=session.user_id, tenant_id=session.tenant_id
+        )
+        session.last_jti = jti
+        await self._session.flush()
+
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "user_id": session.user_id,
+            "tenant_id": session.tenant_id,
             "mfa_required": False,
             "tenants": None,
         }

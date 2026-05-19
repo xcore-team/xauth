@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from ..models.invite import Invite
 from .base import BaseRepository
@@ -22,3 +23,15 @@ class InviteRepository(BaseRepository[Invite]):
             select(Invite).where(Invite.tenant_id == tenant_id)
         )
         return list(result.scalars().all())
+
+    async def deactivate_expired(self) -> int:
+        """Marque comme inactives toutes les invitations expirées. Retourne le nombre traité."""
+        now = datetime.now(tz=timezone.utc)
+        result = await self.session.execute(
+            update(Invite)
+            .where(Invite.is_active == True)  # noqa: E712
+            .where(Invite.expires_at < now)
+            .values(is_active=False)
+        )
+        await self.session.flush()
+        return result.rowcount

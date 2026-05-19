@@ -9,44 +9,66 @@ execution_mode: trusted
 entry_point: src/main.py
 framework_version: ">=2.0.0"
 
+# ── Application ───────────────────────────────────────────────────────────────
+app:
+  name: "XAuth"
+  base_url: "http://localhost:8000"
+
+# ── Seed — tenant et compte admin créés au démarrage ─────────────────────────
+# Toutes les valeurs sont overridables via les variables d'environnement
+# correspondantes (ADMIN_EMAIL, ADMIN_PASSWORD, etc.)
+seed:
+  admin_email: "contact@xcorehub.dev"
+  admin_password: "Hunters123@"
+  admin_tenant_slug: "default"
+  admin_tenant_name: "Default"
+  admin_role_name: "admin"
+  user_role_name: "user"
+
+# ── JWT ───────────────────────────────────────────────────────────────────────
+jwt:
+  private_key_path: "conf/private.pem"
+  public_key_path: "conf/public.pem"
+  access_expire_minutes: 15
+  refresh_expire_days: 7
+
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+# Limites par route — format: "/chemin": [max_requetes, fenetre_secondes]
+# Mettre enabled: false pour désactiver en développement.
+rate_limit:
+  enabled: true
+  routes: {}
+
 # ── Variables d'environnement ─────────────────────────────────────────────────
-# Chargées depuis app/xauth/.env avant résolution des ${VAR}
+# Réservées aux secrets qui ne doivent PAS apparaître en clair dans ce fichier.
+# Les valeurs des sections app/seed/jwt ci-dessus prennent le dessus si la
+# variable d'env est absente ou vide.
 
 envconfiguration:
   inject: true
   env_file: .env
 
 env:
-  APP_NAME: "${XAUTH_APP_NAME}"
-  
-  # admin 
-  ADMIN_EMAIL: ${ADMIN_EMAIL}
-  ADMIN_PASSWORD: ${ADMIN_PASSWORD}
-  ADMIN_TENANT_SLUG: ${ADMIN_TENANT_SLUG}
-  ADMIN_TENANT_NAME: ${ADMIN_TENANT_NAME}
-  ADMIN_ROLE_NAME: ${ADMIN_ROLE_NAME}
-  USER_ROLE_NAME: ${USER_ROLE_NAME}
+  # Overrides admin seed (optionnels — la section seed: est la source par défaut)
+  ADMIN_EMAIL: "${ADMIN_EMAIL}"
+  ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
+  ADMIN_TENANT_SLUG: "${ADMIN_TENANT_SLUG}"
+  ADMIN_TENANT_NAME: "${ADMIN_TENANT_NAME}"
+  ADMIN_ROLE_NAME: "${ADMIN_ROLE_NAME}"
+  USER_ROLE_NAME: "${USER_ROLE_NAME}"
 
-
-  # JWT
+  # Overrides JWT (optionnels — la section jwt: est la source par défaut)
   JWT_PRIVATE_KEY_PATH: "${XAUTH_JWT_PRIVATE_KEY_PATH}"
   JWT_PUBLIC_KEY_PATH: "${XAUTH_JWT_PUBLIC_KEY_PATH}"
   JWT_ACCESS_EXPIRE_MINUTES: "${XAUTH_JWT_ACCESS_EXPIRE_MINUTES}"
   JWT_REFRESH_EXPIRE_DAYS: "${XAUTH_JWT_REFRESH_EXPIRE_DAYS}"
 
-  # SMTP
-  SMTP_HOST: "${XAUTH_SMTP_HOST}"
-  SMTP_PORT: "${XAUTH_SMTP_PORT}"
-  SMTP_USER: "${XAUTH_SMTP_USER}"
-  SMTP_PASSWORD: "${XAUTH_SMTP_PASSWORD}"
-  SMTP_FROM: "${XAUTH_SMTP_FROM}"
-  SMTP_FROM_NAME: "${XAUTH_SMTP_FROM_NAME}"
-  SMTP_USE_TLS: "${XAUTH_SMTP_USE_TLS}"
-
-  # URL de base — liens d'invitation et redirects OAuth
+  # App URL (optionnel — la section app: est la source par défaut)
   APP_BASE_URL: "${XAUTH_APP_BASE_URL}"
+  APP_NAME: "${XAUTH_APP_NAME}"
 
-  # OAuth providers — optionnels (provider désactivé si clés absentes)
+
+  # OAuth providers — secrets, toujours via env
   OAUTH_GOOGLE_CLIENT_ID: "${XAUTH_OAUTH_GOOGLE_CLIENT_ID}"
   OAUTH_GOOGLE_CLIENT_SECRET: "${XAUTH_OAUTH_GOOGLE_CLIENT_SECRET}"
   OAUTH_GITHUB_CLIENT_ID: "${XAUTH_OAUTH_GITHUB_CLIENT_ID}"

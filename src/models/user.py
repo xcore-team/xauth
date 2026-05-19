@@ -30,6 +30,7 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     mfa_secret: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    mfa_backup_codes: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)  # JSON list of hashed codes
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (Index("ix_xauth_user_email", "email"),)

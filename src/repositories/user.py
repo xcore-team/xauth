@@ -9,6 +9,7 @@ from ..models.user import User, TenantMember
 from .base import BaseRepository
 
 
+
 class UserRepository(BaseRepository[User]):
     model = User
 
@@ -25,6 +26,12 @@ class UserRepository(BaseRepository[User]):
             .where(User.id == user_id)
         )
         return result.scalar_one_or_none()
+
+    async def list_all(self, limit: int = 50, offset: int = 0) -> list[User]:
+        result = await self.session.execute(
+            select(User).order_by(User.created_at.desc()).limit(limit).offset(offset)
+        )
+        return list(result.scalars().all())
 
 
 class TenantMemberRepository(BaseRepository[TenantMember]):

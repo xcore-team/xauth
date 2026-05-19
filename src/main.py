@@ -21,6 +21,7 @@ from .providers import (
     MicrosoftProvider,
 )
 from .providers.base import OAuthProvider
+from .middleware import RateLimitMiddleware
 from .routes import (
     audit_router,
     invites_router,
@@ -30,6 +31,8 @@ from .routes import (
     rbac_router,
     tenants_router,
 )
+from .routes.admin import admin_router
+from .routes.sessions import sessions_router
 from .schemas.auth import (
     LoginRequest,
     LogoutRequest,
@@ -37,7 +40,6 @@ from .schemas.auth import (
     RegisterRequest,
     TokenResponse,
     UserResponse,
-    UserRootSchemas
 )
 from .services.auth import AuthService
 from .services.email import AuthEmailService
@@ -62,7 +64,7 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
         _migrations_dir = Path(__file__).parent.parent / "migrations"
         runner = MigrationRunner(db_url=str(db.engine.url), migrations_dir=_migrations_dir)
         try:
-            await runner.init(autogenerate=True, message="first_initialisation")
+            await runner.init(autogenerate=False, message="first_initialisation")
             await runner.upgrade()
         except Exception as exc:
             _logger.warning("[xauth] Migration upgrade ignorée : %s", exc)
@@ -70,7 +72,9 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
     async def on_load(self) -> None:
         self.app = APIRouter()
 
-        env = self.ctx.env
+        env = self.ctx.env   # type: ignore  — vars d'env résolues (secrets)
+        cfg = self.ctx.config  # type: ignore  — sections extra de plugin.yaml
+
         db = self.get_service("db")
         cache = self.get_service("cache")
 
@@ -79,58 +83,58 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
         self._db = db
         self._cache = cache
 
-        # TokenService — python-jose + fichiers PEM configurés dans .env
+        # ── Résolution config : plugin.yaml > env vars ──────────────────────
+        app_cfg = cfg.get("app", {})
+        jwt_cfg = cfg.get("jwt", {})
+
+        app_name    = env.get("APP_NAME")    or app_cfg.get("name",     "XAuth")
+        app_base_url = env.get("APP_BASE_URL") or app_cfg.get("base_url", "http://localhost:8000")
+
+        private_key  = env.get("JWT_PRIVATE_KEY_PATH") or jwt_cfg.get("private_key_path",  "conf/private.pem")
+        public_key   = env.get("JWT_PUBLIC_KEY_PATH")  or jwt_cfg.get("public_key_path",   "conf/public.pem")
+        access_exp   = int(env.get("JWT_ACCESS_EXPIRE_MINUTES") or jwt_cfg.get("access_expire_minutes", 15))
+        refresh_exp  = int(env.get("JWT_REFRESH_EXPIRE_DAYS")   or jwt_cfg.get("refresh_expire_days",   7))
+
+        # ── Services ────────────────────────────────────────────────────────
         self._token_service = TokenService(
-            private_key_path=env["JWT_PRIVATE_KEY_PATH"],
-            public_key_path=env["JWT_PUBLIC_KEY_PATH"],
-            access_expire_minutes=int(env.get("JWT_ACCESS_EXPIRE_MINUTES", "15")),
-            refresh_expire_days=int(env.get("JWT_REFRESH_EXPIRE_DAYS", "7")),
+            private_key_path=private_key,
+            public_key_path=public_key,
+            access_expire_minutes=access_exp,
+            refresh_expire_days=refresh_exp,
         )
 
-        # Service email — extension Xcore (ext.email)
-        # Les templates sont définis dans l'extension (extensions/mail/)
         email_ext = self.get_service("ext.email")
         self._email_service = AuthEmailService(
-            app_name=env.get("APP_NAME", "XAuth"),
+            app_name=app_name,
             email_ext=email_ext,
-            app_base_url=env.get("APP_BASE_URL", "http://localhost:8000"),
+            app_base_url=app_base_url,
         )
 
-        # Enregistre le backend global Xcore — dès ce moment, tous les plugins
-        # peuvent utiliser Depends(require_permission(...)) / Depends(get_current_user)
         register_auth_backend(
-            XAuthBackend(
-                token_service=self._token_service,
-                db=db,
-                cache=cache,
-            )
+            XAuthBackend(token_service=self._token_service, db=db, cache=cache)
         )
 
-        # EventBus Xcore — émetteur typé partagé entre tous les services
         self._events = XAuthEvents(self.ctx.events)
 
-        # Providers OAuth — construits depuis self.ctx.env
-        oauth_providers = _build_oauth_providers(env)
+        oauth_providers = _build_oauth_providers(env, app_base_url)
 
+        # ── Routes ──────────────────────────────────────────────────────────
         self.app.include_router(
-            _auth_router_with_db(
-                db, self._token_service, self._email_service, self._events
-            )
+            _auth_router_with_db(db, self._token_service, self._email_service, self._events, cache)
         )
         self.app.include_router(tenants_router(db))
         self.app.include_router(rbac_router(db, cache=cache))
         self.app.include_router(mfa_router(db))
         self.app.include_router(invites_router(db, self._email_service, self._events))
         self.app.include_router(audit_router(db))
-        self.app.include_router(
-            oauth_router(db, cache, self._token_service, oauth_providers)
-        )
-        self.app.include_router(
-            password_router(db, cache, self._email_service, self._events)
-        )
+        self.app.include_router(oauth_router(db, cache, self._token_service, oauth_providers))
+        self.app.include_router(password_router(db, cache, self._email_service, self._events))
+        self.app.include_router(sessions_router(db, self._token_service, cache=cache))
+        self.app.include_router(admin_router(db, cache=cache, token_service=self._token_service))
 
+        # ── Seed ────────────────────────────────────────────────────────────
         from .services.seed import run_seed
-        await run_seed(db)
+        await run_seed(db, cfg=_build_seed_cfg(cfg.get("seed", {}), env))
 
     async def on_unload(self) -> None:
         unregister_auth_backend()
@@ -138,12 +142,42 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
     def get_router(self) -> APIRouter | None:
         return self.app
 
+def _build_seed_cfg(seed_yaml: dict, env: dict) -> dict:
+    """
+    Construit le dict de config seed.
+    Priorité : env vars > section seed: de plugin.yaml.
+    Lève RuntimeError si une clé requise est absente des deux sources.
+    """
+    fields = {
+        "ADMIN_EMAIL":       "admin_email",
+        "ADMIN_PASSWORD":    "admin_password",
+        "ADMIN_TENANT_SLUG": "admin_tenant_slug",
+        "ADMIN_TENANT_NAME": "admin_tenant_name",
+        "ADMIN_ROLE_NAME":   "admin_role_name",
+        "USER_ROLE_NAME":    "user_role_name",
+    }
+    result: dict = {}
+    missing: list[str] = []
+    for env_key, yaml_key in fields.items():
+        value = env.get(env_key) or seed_yaml.get(yaml_key)
+        if not value:
+            missing.append(f"seed.{yaml_key}")
+        else:
+            result[env_key] = value
+    if missing:
+        raise RuntimeError(
+            "[xauth] Configuration seed incomplète — champs manquants dans plugin.yaml : "
+            + ", ".join(missing)
+        )
+    return result
+
 
 def _auth_router_with_db(
     db,
     token_service: TokenService,
     email_service: AuthEmailService,
     events: XAuthEvents | None = None,
+    cache=None,
 ) -> APIRouter:
     router = APIRouter(tags=["auth"])
 
@@ -154,11 +188,11 @@ def _auth_router_with_db(
         return request.client.host if request.client else "unknown"
 
     @router.post(
-        "/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED
-    )
+            "/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED
+        )
     async def register(body: RegisterRequest):
         async with db.session() as session:
-            svc = AuthService(session, token_service, events)
+            svc = AuthService(session, token_service, events, cache=cache)
             try:
                 user = await svc.register(
                     email=body.email,
@@ -167,10 +201,14 @@ def _auth_router_with_db(
                 )
                 await session.commit()
                 await session.refresh(user)
-                email_service.auth.queue(
+                email_service.auth.queue_template(
                     to=user.email,
                     subject=f"Bienvenue sur {email_service.auth.app_name}",
-                    body=f"Bienvenue {user.email} !",
+                    template="welcome",
+                    context={
+                        "username": user.email,
+                        "login_url": f"{email_service.auth.base_url}/login",
+                    },
                 )
                 return user
             except ValueError as exc:
@@ -180,7 +218,7 @@ def _auth_router_with_db(
     async def login(body: LoginRequest, request: Request):
         ip = _extract_ip(request)
         async with db.session() as session:
-            svc = AuthService(session, token_service, events)
+            svc = AuthService(session, token_service, events, cache=cache)
             try:
                 result = await svc.login(
                     email=body.email,
@@ -197,7 +235,7 @@ def _auth_router_with_db(
     async def refresh(body: RefreshRequest, request: Request):
         ip = _extract_ip(request)
         async with db.session() as session:
-            svc = AuthService(session, token_service, events)
+            svc = AuthService(session, token_service, events, cache=cache)
             try:
                 result = await svc.refresh(
                     refresh_token=body.refresh_token, ip_address=ip
@@ -210,7 +248,7 @@ def _auth_router_with_db(
     @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
     async def logout(body: LogoutRequest):
         async with db.session() as session:
-            svc = AuthService(session, token_service, events)
+            svc = AuthService(session, token_service, events, cache=cache)
             await svc.logout(body.refresh_token)
             await session.commit()
 
@@ -228,12 +266,12 @@ def _auth_router_with_db(
     return router
 
 
-def _build_oauth_providers(env: dict) -> dict[str, OAuthProvider]:
+def _build_oauth_providers(env: dict, base_url: str = "http://localhost:8000") -> dict[str, OAuthProvider]:
     """
     Construit le dict provider_name → instance à partir des vars d'env.
-    Un provider est activé seulement si BOTH client_id et client_secret sont présents.
+    Un provider est activé seulement si client_id et client_secret sont présents.
     """
-    base_url = env.get("APP_BASE_URL", "http://localhost:8000").rstrip("/")
+    base_url = base_url.rstrip("/")
     providers: dict[str, OAuthProvider] = {}
 
     _registry = [

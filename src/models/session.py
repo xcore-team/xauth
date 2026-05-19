@@ -31,5 +31,7 @@ class Session(Base):
     last_seen: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     is_revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    # JTI du dernier access token émis pour cette session — blacklisté au logout
+    last_jti: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="sessions")
