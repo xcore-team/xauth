@@ -37,13 +37,14 @@ from .schemas.auth import (
     RegisterRequest,
     TokenResponse,
     UserResponse,
-    UserRootSchemas
+    UserRootSchemas,
 )
 from .services.auth import AuthService
 from .services.email import AuthEmailService
 from .services.events import XAuthEvents
-from .services.token import TokenService
 from .services.seed import run_seed
+from .services.token import TokenService
+
 
 class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
     """
@@ -53,14 +54,18 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
     """
 
     async def _initialize_tables(self, db) -> None:
-        from xcore.services.database.migrations import MigrationRunner
         import logging as _log
+
+        from xcore.services.database.migrations import MigrationRunner
+
         _logger = _log.getLogger("hub.xauth")
         async with db.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         _logger.info("[xauth] Tables créées / vérifiées")
         _migrations_dir = Path(__file__).parent.parent / "migrations"
-        runner = MigrationRunner(db_url=str(db.engine.url), migrations_dir=_migrations_dir)
+        runner = MigrationRunner(
+            db_url=str(db.engine.url), migrations_dir=_migrations_dir
+        )
         try:
             await runner.init(autogenerate=False, message="first_initialisation")
             await runner.upgrade()
@@ -93,7 +98,7 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
         self._email_service = AuthEmailService(
             app_name=env.get("APP_NAME", "XAuth"),
             email_ext=email_ext,
-            app_base_url=env.get("APP_BASE_URL", "http://localhost:8000"),
+            app_base_url=env.get("APP_BASE_URL", "https://api.xcorehub.dev"),
         )
 
         # Enregistre le backend global Xcore — dès ce moment, tous les plugins
@@ -123,21 +128,27 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
         self.app.include_router(invites_router(db, self._email_service, self._events))
         self.app.include_router(audit_router(db))
         self.app.include_router(
-            oauth_router(db, cache, self._token_service, oauth_providers, self._email_service)
+            oauth_router(
+                db, cache, self._token_service, oauth_providers, self._email_service
+            )
         )
         self.app.include_router(
             password_router(db, cache, self._email_service, self._events)
         )
 
         from .services.seed import run_seed
-        await run_seed(db, UserRootSchemas(
-            ADMIN_EMAIL=self.ctx.env['ADMIN_EMAIL'],
-            ADMIN_PASSWORD=self.ctx.env['ADMIN_PASSWORD'],
-            ADMIN_TENANT_SLUG=self.ctx.env['ADMIN_TENANT_SLUG'],
-            ADMIN_TENANT_NAME=self.ctx.env['ADMIN_TENANT_NAME'],
-            ADMIN_ROLE_NAME=self.ctx.env['ADMIN_ROLE_NAME'],
-            USER_ROLE_NAME=self.ctx.env['USER_ROLE_NAME'],
-        ))
+
+        await run_seed(
+            db,
+            UserRootSchemas(
+                ADMIN_EMAIL=self.ctx.env["ADMIN_EMAIL"],
+                ADMIN_PASSWORD=self.ctx.env["ADMIN_PASSWORD"],
+                ADMIN_TENANT_SLUG=self.ctx.env["ADMIN_TENANT_SLUG"],
+                ADMIN_TENANT_NAME=self.ctx.env["ADMIN_TENANT_NAME"],
+                ADMIN_ROLE_NAME=self.ctx.env["ADMIN_ROLE_NAME"],
+                USER_ROLE_NAME=self.ctx.env["USER_ROLE_NAME"],
+            ),
+        )
 
     async def on_unload(self) -> None:
         unregister_auth_backend()
@@ -239,7 +250,7 @@ def _build_oauth_providers(env: dict) -> dict[str, OAuthProvider]:
     Construit le dict provider_name → instance à partir des vars d'env.
     Un provider est activé seulement si BOTH client_id et client_secret sont présents.
     """
-    base_url = env.get("APP_BASE_URL", "http://localhost:8000").rstrip("/")
+    base_url = env.get("XAUTH_APP_BASE_URL", "http://localhost:8000").rstrip("/")
     providers: dict[str, OAuthProvider] = {}
 
     _registry = [
