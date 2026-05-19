@@ -16,8 +16,7 @@ from ..services.auth import AuthService
 from ..services.token import TokenService
 
 def _extract_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
+    if forwarded := request.headers.get("x-forwarded-for"):
         return forwarded.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
 
@@ -33,7 +32,6 @@ def auth_router(auth_service: AuthService, token_service: TokenService) -> APIRo
             user = await auth_service.register(
                 email=body.email,
                 password=body.password,
-                tenant_slug=body.tenant_slug,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))

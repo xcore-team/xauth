@@ -21,12 +21,11 @@ def oauth_router(
     cache: Any,
     token_service: TokenService,
     providers: dict[str, OAuthProvider],
-    user_role_name: str = "user",
 ) -> APIRouter:
     router = APIRouter(prefix="/oauth", tags=["oauth"])
 
     def _svc(session) -> OAuthService:
-        return OAuthService(session, token_service, cache, providers, user_role_name=user_role_name)
+        return OAuthService(session, token_service, cache, providers)
 
     def _extract_ip(request: Request) -> str:
         forwarded = request.headers.get("x-forwarded-for")

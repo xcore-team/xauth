@@ -38,6 +38,8 @@ from .schemas.auth import (
     LogoutRequest,
     RefreshRequest,
     RegisterRequest,
+    SetupCreateRequest,
+    SetupJoinRequest,
     TokenResponse,
     UserResponse,
 )
@@ -120,17 +122,18 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
 
         seed_cfg = cfg.get("seed", {})
         user_role_name = env.get("USER_ROLE_NAME") or seed_cfg.get("user_role_name", "user")
+        admin_role_name = env.get("ADMIN_ROLE_NAME") or seed_cfg.get("admin_role_name", "admin")
 
         # ── Routes ──────────────────────────────────────────────────────────
         self.app.include_router(
-            _auth_router_with_db(db, self._token_service, self._email_service, self._events, cache, user_role_name=user_role_name)
+            _auth_router_with_db(db, self._token_service, self._email_service, self._events, cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
         )
         self.app.include_router(tenants_router(db))
         self.app.include_router(rbac_router(db, cache=cache))
         self.app.include_router(mfa_router(db))
         self.app.include_router(invites_router(db, self._email_service, self._events))
         self.app.include_router(audit_router(db))
-        self.app.include_router(oauth_router(db, cache, self._token_service, oauth_providers, user_role_name=user_role_name))
+        self.app.include_router(oauth_router(db, cache, self._token_service, oauth_providers))
         self.app.include_router(password_router(db, cache, self._email_service, self._events))
         self.app.include_router(sessions_router(db, self._token_service, cache=cache))
         self.app.include_router(admin_router(db, cache=cache, token_service=self._token_service))
@@ -182,6 +185,7 @@ def _auth_router_with_db(
     events: XAuthEvents | None = None,
     cache=None,
     user_role_name: str = "user",
+    admin_role_name: str = "admin",
 ) -> APIRouter:
     router = APIRouter(tags=["auth"])
 
@@ -196,12 +200,11 @@ def _auth_router_with_db(
         )
     async def register(body: RegisterRequest):
         async with db.session() as session:
-            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name)
+            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
             try:
                 user = await svc.register(
                     email=body.email,
                     password=body.password,
-                    tenant_slug=body.tenant_slug,
                 )
                 await session.commit()
                 await session.refresh(user)
@@ -222,7 +225,7 @@ def _auth_router_with_db(
     async def login(body: LoginRequest, request: Request):
         ip = _extract_ip(request)
         async with db.session() as session:
-            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name)
+            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
             try:
                 result = await svc.login(
                     email=body.email,
@@ -239,7 +242,7 @@ def _auth_router_with_db(
     async def refresh(body: RefreshRequest, request: Request):
         ip = _extract_ip(request)
         async with db.session() as session:
-            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name)
+            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
             try:
                 result = await svc.refresh(
                     refresh_token=body.refresh_token, ip_address=ip
@@ -252,9 +255,50 @@ def _auth_router_with_db(
     @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
     async def logout(body: LogoutRequest):
         async with db.session() as session:
-            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name)
+            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
             await svc.logout(body.refresh_token)
             await session.commit()
+
+    @router.post("/setup/create", response_model=TokenResponse)
+    async def setup_create(body: SetupCreateRequest, request: Request):
+        """
+        Crée un nouveau tenant et y rattache l'utilisateur comme owner.
+        À appeler après un login qui retourne needs_tenant_setup=true.
+        """
+        ip = _extract_ip(request)
+        async with db.session() as session:
+            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
+            try:
+                result = await svc.setup_create_tenant(
+                    refresh_token=body.refresh_token,
+                    name=body.name,
+                    slug=body.slug,
+                    ip_address=ip,
+                )
+                await session.commit()
+                return result
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+
+    @router.post("/setup/join", response_model=TokenResponse)
+    async def setup_join(body: SetupJoinRequest, request: Request):
+        """
+        Rejoint un tenant existant via un token d'invitation.
+        À appeler après un login qui retourne needs_tenant_setup=true.
+        """
+        ip = _extract_ip(request)
+        async with db.session() as session:
+            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
+            try:
+                result = await svc.setup_join_tenant(
+                    refresh_token=body.refresh_token,
+                    invite_token=body.invite_token,
+                    ip_address=ip,
+                )
+                await session.commit()
+                return result
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
 
     @router.get("/me", response_model=UserResponse)
     async def me(current_user: AuthPayload = Depends(get_current_user)):

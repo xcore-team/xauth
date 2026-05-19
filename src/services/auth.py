@@ -69,18 +69,19 @@ class AuthService:
         events: XAuthEvents | None = None,
         cache: Any = None,
         user_role_name: str = "user",
+        admin_role_name: str = "admin",
     ) -> None:
         self._session = session
         self._token = token_service
         self._events = events
         self._cache = cache
         self._user_role_name = user_role_name
+        self._admin_role_name = admin_role_name
 
     async def register(
         self,
         email: str,
         password: str,
-        tenant_slug: Optional[str] = None,
         min_length: int = 8,
         require_uppercase: bool = True,
         require_digit: bool = True,
@@ -101,38 +102,10 @@ class AuthService:
         user = User(email=email, hashed_password=hashed)
         await user_repo.save(user)
 
-        # Assigne le membership dans le tenant demandé (ou le tenant par défaut)
-        from ..repositories.rbac import RoleRepository
-
-        tenant_repo = TenantRepository(self._session)
-        if tenant_slug:
-            tenant = await tenant_repo.get_by_slug(tenant_slug)
-        else:
-            tenant = await tenant_repo.get_by_slug("default")
-
-        if tenant:
-            role_repo = RoleRepository(self._session)
-            global_roles = await role_repo.list_for_tenant(None)
-            user_role = next((r for r in global_roles if r.name == self._user_role_name), None)
-            if user_role is None:
-                _logger.warning(
-                    "[xauth] Rôle '%s' introuvable — membership créé sans rôle pour %s",
-                    self._user_role_name,
-                    email,
-                )
-            member_repo = TenantMemberRepository(self._session)
-            membership = TenantMember(
-                user_id=user.id,
-                tenant_id=tenant.id,
-                role_id=user_role.id if user_role else None,
-            )
-            await member_repo.save(membership)
-
         audit = AuditService(self._session)
         await audit.log_event(
             action="user.registered",
             user_id=user.id,
-            tenant_id=tenant.id if tenant else None,
             resource="user",
             resource_id=user.id,
         )
@@ -141,7 +114,7 @@ class AuthService:
             await self._events.user_registered(
                 user_id=user.id,
                 email=user.email,
-                tenant_id=tenant_slug,
+                tenant_id=None,
             )
 
         return user
@@ -257,7 +230,37 @@ class AuthService:
             memberships = await member_repo.get_memberships_for_user(user.id)
 
             if not memberships:
-                raise ValueError("No tenant membership found for this user")
+                # Aucun tenant : créer une session sans tenant et demander au client
+                # de créer ou rejoindre un tenant via /auth/setup/*
+                refresh_token_plain = self._token.create_refresh_token()
+                refresh_token_hashed = self._token.hash_token(refresh_token_plain)
+                session_repo = SessionRepository(self._session)
+                pending_session = Session(
+                    user_id=user.id,
+                    tenant_id=None,
+                    refresh_token=refresh_token_hashed,
+                    device_fingerprint=device_fingerprint,
+                    ip_address=ip_address,
+                    expires_at=datetime.now(tz=timezone.utc)
+                    + timedelta(days=self._token._refresh_expire),
+                )
+                await session_repo.save(pending_session)
+                await audit.log_event(
+                    action="login.needs_tenant_setup",
+                    user_id=user.id,
+                    ip_address=ip_address,
+                    metadata={"reason": "no_membership"},
+                )
+                return {
+                    "access_token": "",
+                    "refresh_token": refresh_token_plain,
+                    "token_type": "bearer",
+                    "user_id": user.id,
+                    "tenant_id": None,
+                    "mfa_required": False,
+                    "needs_tenant_setup": True,
+                    "tenants": None,
+                }
 
             if len(memberships) == 1:
                 # Un seul tenant → on scope directement, flow normal
@@ -476,5 +479,174 @@ class AuthService:
             "user_id": session.user_id,
             "tenant_id": session.tenant_id,
             "mfa_required": False,
+            "tenants": None,
+        }
+
+    # ── Tenant setup (après login sans membership) ────────────────────────────
+
+    async def _resolve_pending_session(self, refresh_token: str):
+        """Valide un refresh token et retourne la Session. Lève ValueError si invalide."""
+        hashed = self._token.hash_token(refresh_token)
+        session_repo = SessionRepository(self._session)
+        session = await session_repo.get_by_refresh_token(hashed)
+        if session is None or session.is_revoked:
+            raise ValueError("Invalid or expired refresh token")
+        now = datetime.now(tz=timezone.utc)
+        expires = session.expires_at
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires < now:
+            session.is_revoked = True
+            await self._session.flush()
+            raise ValueError("Refresh token expired")
+        return session
+
+    async def setup_create_tenant(
+        self,
+        refresh_token: str,
+        name: str,
+        slug: str,
+        ip_address: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Crée un nouveau tenant et y rattache l'utilisateur comme owner (rôle admin).
+        Réservé aux sessions en attente de setup (tenant_id = None, needs_tenant_setup).
+        """
+        from ..models.tenant import Tenant
+        from ..repositories.rbac import RoleRepository
+        from ..repositories.tenant import TenantRepository
+
+        session = await self._resolve_pending_session(refresh_token)
+
+        tenant_repo = TenantRepository(self._session)
+        if await tenant_repo.get_by_slug(slug) is not None:
+            raise ValueError(f"Le slug '{slug}' est déjà utilisé")
+
+        tenant = Tenant(name=name, slug=slug)
+        await tenant_repo.save(tenant)
+
+        role_repo = RoleRepository(self._session)
+        global_roles = await role_repo.list_for_tenant(None)
+        admin_role = next((r for r in global_roles if r.name == self._admin_role_name), None)
+        if admin_role is None:
+            _logger.warning(
+                "[xauth] Rôle admin '%s' introuvable — owner créé sans rôle pour le tenant %s",
+                self._admin_role_name,
+                slug,
+            )
+
+        member_repo = TenantMemberRepository(self._session)
+        membership = TenantMember(
+            user_id=session.user_id,
+            tenant_id=tenant.id,
+            role_id=admin_role.id if admin_role else None,
+            is_owner=True,
+        )
+        await member_repo.save(membership)
+
+        access_token, jti = self._token.create_access_token(
+            user_id=session.user_id, tenant_id=tenant.id
+        )
+        session.tenant_id = tenant.id
+        session.last_jti = jti
+        await self._session.flush()
+
+        audit = AuditService(self._session)
+        await audit.log_event(
+            action="tenant.created",
+            user_id=session.user_id,
+            tenant_id=tenant.id,
+            resource="tenant",
+            resource_id=tenant.id,
+            ip_address=ip_address,
+        )
+
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "user_id": session.user_id,
+            "tenant_id": tenant.id,
+            "mfa_required": False,
+            "needs_tenant_setup": False,
+            "tenants": None,
+        }
+
+    async def setup_join_tenant(
+        self,
+        refresh_token: str,
+        invite_token: str,
+        ip_address: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Rejoint un tenant existant via un token d'invitation.
+        L'email de l'invitation doit correspondre à celui de l'utilisateur.
+        """
+        from ..repositories.invite import InviteRepository
+        from ..repositories.user import UserRepository
+
+        session = await self._resolve_pending_session(refresh_token)
+        now = datetime.now(tz=timezone.utc)
+
+        user_repo = UserRepository(self._session)
+        user = await user_repo.get(session.user_id)
+        if user is None:
+            raise ValueError("Utilisateur introuvable")
+
+        invite_repo = InviteRepository(self._session)
+        invite = await invite_repo.get_by_token(invite_token)
+
+        if invite is None or not invite.is_active or invite.used_at is not None:
+            raise ValueError("Code d'invitation invalide ou déjà utilisé")
+
+        invite_expires = invite.expires_at
+        if invite_expires.tzinfo is None:
+            invite_expires = invite_expires.replace(tzinfo=timezone.utc)
+        if invite_expires < now:
+            raise ValueError("Le code d'invitation a expiré")
+
+        if invite.email.lower() != user.email.lower():
+            raise ValueError("Cette invitation n'est pas destinée à votre adresse email")
+
+        member_repo = TenantMemberRepository(self._session)
+        if await member_repo.get_membership(user.id, invite.tenant_id) is not None:
+            raise ValueError("Vous êtes déjà membre de ce tenant")
+
+        membership = TenantMember(
+            user_id=user.id,
+            tenant_id=invite.tenant_id,
+            role_id=invite.role_id,
+        )
+        await member_repo.save(membership)
+
+        invite.used_at = now
+        invite.is_active = False
+        await self._session.flush()
+
+        access_token, jti = self._token.create_access_token(
+            user_id=user.id, tenant_id=invite.tenant_id
+        )
+        session.tenant_id = invite.tenant_id
+        session.last_jti = jti
+        await self._session.flush()
+
+        audit = AuditService(self._session)
+        await audit.log_event(
+            action="tenant.joined",
+            user_id=user.id,
+            tenant_id=invite.tenant_id,
+            resource="tenant",
+            resource_id=invite.tenant_id,
+            ip_address=ip_address,
+        )
+
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "user_id": user.id,
+            "tenant_id": invite.tenant_id,
+            "mfa_required": False,
+            "needs_tenant_setup": False,
             "tenants": None,
         }

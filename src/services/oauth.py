@@ -15,11 +15,8 @@ from ..models.session import Session
 from ..models.user import User
 from ..providers.base import OAuthProvider, OAuthUserInfo
 from ..repositories.oauth import OAuthAccountRepository
-from ..repositories.rbac import RoleRepository
 from ..repositories.session import SessionRepository
-from ..repositories.tenant import TenantRepository
-from ..repositories.user import TenantMemberRepository, UserRepository
-from ..models.user import TenantMember
+from ..repositories.user import UserRepository
 from .token import TokenService
 
 # TTL du state CSRF en secondes
@@ -39,13 +36,11 @@ class OAuthService:
         token_service: TokenService,
         cache: Any,
         providers: dict[str, OAuthProvider],
-        user_role_name: str = "user",
     ) -> None:
         self._session = session
         self._token = token_service
         self._cache = cache
         self._providers = providers
-        self._user_role_name = user_role_name
 
     # ── Providers registry ────────────────────────────────────────────────────
 
@@ -116,12 +111,85 @@ class OAuthService:
         # Find-or-create
         user = await self._find_or_create_user(user_info)
 
-        # Créer la session xauth (refresh token rotatif)
         refresh_plain = self._token.create_refresh_token()
         refresh_hashed = self._token.hash_token(refresh_plain)
-        tenant_id = state_data.get("tenant_id")
-
         session_repo = SessionRepository(self._session)
+
+        # Vérifier les memberships — même logique que login()
+        from ..repositories.user import TenantMemberRepository
+        from ..repositories.tenant import TenantRepository
+
+        member_repo = TenantMemberRepository(self._session)
+        memberships = await member_repo.get_memberships_for_user(user.id)
+
+        # tenant_id explicite fourni dans le state (ex: lien d'invite OAuth)
+        forced_tenant_id: Optional[str] = state_data.get("tenant_id")
+        is_new = getattr(user, "_is_new", False)
+
+        if forced_tenant_id:
+            tenant_id: Optional[str] = forced_tenant_id
+        elif not memberships:
+            # Aucun tenant — demander au client de créer ou rejoindre
+            xauth_session = Session(
+                user_id=user.id,
+                tenant_id=None,
+                refresh_token=refresh_hashed,
+                ip_address=ip_address,
+                expires_at=datetime.now(tz=timezone.utc)
+                + timedelta(days=self._token._refresh_expire),
+            )
+            await session_repo.save(xauth_session)
+            return {
+                "access_token": "",
+                "refresh_token": refresh_plain,
+                "token_type": "bearer",
+                "user_id": user.id,
+                "tenant_id": None,
+                "needs_tenant_setup": True,
+                "provider": provider_name,
+                "is_new_user": is_new,
+                "post_login_redirect": state_data.get("redirect"),
+            }
+        elif len(memberships) == 1:
+            tenant_id = memberships[0].tenant_id
+        else:
+            # Plusieurs tenants — retourner la liste
+            tenant_repo = TenantRepository(self._session)
+            tenants = []
+            for m in memberships:
+                t = await tenant_repo.get(m.tenant_id)
+                tenants.append({
+                    "id": m.tenant_id,
+                    "name": t.name if t else None,
+                    "slug": t.slug if t else None,
+                    "role_id": m.role_id,
+                    "is_owner": m.is_owner,
+                })
+            xauth_session = Session(
+                user_id=user.id,
+                tenant_id=None,
+                refresh_token=refresh_hashed,
+                ip_address=ip_address,
+                expires_at=datetime.now(tz=timezone.utc)
+                + timedelta(days=self._token._refresh_expire),
+            )
+            await session_repo.save(xauth_session)
+            return {
+                "access_token": "",
+                "refresh_token": refresh_plain,
+                "token_type": "bearer",
+                "user_id": user.id,
+                "tenant_id": None,
+                "tenants": tenants,
+                "provider": provider_name,
+                "is_new_user": is_new,
+                "post_login_redirect": state_data.get("redirect"),
+            }
+
+        # 1 tenant résolu — émettre l'access token
+        access_jwt, jti = self._token.create_access_token(
+            user_id=user.id, tenant_id=tenant_id
+        )
         xauth_session = Session(
             user_id=user.id,
             tenant_id=tenant_id,
@@ -129,12 +197,9 @@ class OAuthService:
             ip_address=ip_address,
             expires_at=datetime.now(tz=timezone.utc)
             + timedelta(days=self._token._refresh_expire),
+            last_jti=jti,
         )
         await session_repo.save(xauth_session)
-
-        access_jwt = self._token.create_access_token(
-            user_id=user.id, tenant_id=tenant_id
-        )
 
         return {
             "access_token": access_jwt,
@@ -142,8 +207,9 @@ class OAuthService:
             "token_type": "bearer",
             "user_id": user.id,
             "tenant_id": tenant_id,
+            "needs_tenant_setup": False,
             "provider": provider_name,
-            "is_new_user": getattr(user, "_is_new", False),
+            "is_new_user": is_new,
             "post_login_redirect": state_data.get("redirect"),
         }
 
@@ -247,27 +313,6 @@ class OAuthService:
         user = User(email=info.email, hashed_password=None, is_active=True)
         user._is_new = True  # flag pour la réponse
         await user_repo.save(user)
-
-        # Assigner au tenant "default" comme le register classique
-        tenant_repo = TenantRepository(self._session)
-        tenant = await tenant_repo.get_by_slug("default")
-        if tenant:
-            role_repo = RoleRepository(self._session)
-            global_roles = await role_repo.list_for_tenant(None)
-            user_role = next((r for r in global_roles if r.name == self._user_role_name), None)
-            if user_role is None:
-                _logger.warning(
-                    "[xauth] Rôle '%s' introuvable — membership OAuth créé sans rôle pour %s",
-                    self._user_role_name,
-                    info.email,
-                )
-            member_repo = TenantMemberRepository(self._session)
-            membership = TenantMember(
-                user_id=user.id,
-                tenant_id=tenant.id,
-                role_id=user_role.id if user_role else None,
-            )
-            await member_repo.save(membership)
 
         new_account = OAuthAccount(
             user_id=user.id,

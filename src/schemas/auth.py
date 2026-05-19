@@ -27,7 +27,6 @@ class SelectTenantRequest(BaseModel):
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
-    tenant_slug: Optional[str] = None
 
 
 class LoginRequest(BaseModel):
@@ -44,6 +43,17 @@ class LogoutRequest(BaseModel):
     refresh_token: str
 
 
+class SetupCreateRequest(BaseModel):
+    refresh_token: str
+    name: str
+    slug: str
+
+
+class SetupJoinRequest(BaseModel):
+    refresh_token: str
+    invite_token: str
+
+
 class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
@@ -51,6 +61,7 @@ class TokenResponse(BaseModel):
     user_id: Optional[str] = None
     tenant_id: Optional[str] = None
     mfa_required: bool = False
+    needs_tenant_setup: bool = False  # ← true si l'user n'appartient à aucun tenant
     tenants: Optional[list[TenantInfo]] = None  # ← présent uniquement si multi-tenant
 
 
