@@ -37,7 +37,7 @@ def rbac_router(db: Any, cache: Any = None) -> APIRouter:
                 description=body.description,
             )
             await session.commit()
-            await session.refresh(role)
+            role = await _svc(session).get_role(role.id)
             return role
 
     @router.get("/roles", response_model=List[RoleResponse])
