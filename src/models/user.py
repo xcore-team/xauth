@@ -50,6 +50,10 @@ class User(Base):
         "OAuthAccount", back_populates="user", cascade="all, delete-orphan"
     )
 
+    @property
+    def has_password(self) -> bool:
+        return self.hashed_password is not None
+
 
 class TenantMember(Base):
     __tablename__ = "xauth_tenant_members"
