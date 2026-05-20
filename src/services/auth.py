@@ -13,6 +13,7 @@ from ..repositories.session import SessionRepository
 from ..repositories.tenant import TenantRepository
 from ..repositories.user import TenantMemberRepository, UserRepository
 from .events import XAuthEvents
+from .rbac import RBACService
 from .token import TokenService
 
 
@@ -159,8 +160,13 @@ class AuthService(AuthBackend):
         )
         await session_repo.save(new_session)
 
+        permissions = await RBACService(self._session).get_permissions_for_user(
+            session.user_id, session.tenant_id or ""
+        )
         access_token = self._token.create_access_token(
-            user_id=session.user_id, tenant_id=session.tenant_id
+            user_id=session.user_id,
+            tenant_id=session.tenant_id,
+            extra={"permissions": permissions} if permissions else None,
         )
 
         if self._events:
@@ -282,7 +288,14 @@ class AuthService(AuthBackend):
             }
 
         # ── Flow normal : émission des tokens ─────────────────────────────────────
-        access_token = self._token.create_access_token(user_id=user.id, tenant_id=tenant_id)
+        permissions = await RBACService(self._session).get_permissions_for_user(
+            user.id, tenant_id or ""
+        )
+        access_token = self._token.create_access_token(
+            user_id=user.id,
+            tenant_id=tenant_id,
+            extra={"permissions": permissions} if permissions else None,
+        )
         refresh_token_plain = self._token.create_refresh_token()
         refresh_token_hashed = self._token.hash_token(refresh_token_plain)
 
@@ -351,8 +364,13 @@ class AuthService(AuthBackend):
         session.tenant_id = tenant_id
         await self._session.flush()
 
+        permissions = await RBACService(self._session).get_permissions_for_user(
+            session.user_id, tenant_id
+        )
         access_token = self._token.create_access_token(
-            user_id=session.user_id, tenant_id=tenant_id
+            user_id=session.user_id,
+            tenant_id=tenant_id,
+            extra={"permissions": permissions} if permissions else None,
         )
 
         if self._events:
