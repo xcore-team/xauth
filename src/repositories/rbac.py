@@ -23,11 +23,15 @@ class RoleRepository(BaseRepository[Role]):
     async def list_for_tenant(self, tenant_id: Optional[str]) -> list[Role]:
         if tenant_id is None:
             result = await self.session.execute(
-                select(Role).where(Role.tenant_id.is_(None))
+                select(Role)
+                .options(selectinload(Role.permissions))
+                .where(Role.tenant_id.is_(None))
             )
         else:
             result = await self.session.execute(
-                select(Role).where(
+                select(Role)
+                .options(selectinload(Role.permissions))
+                .where(
                     (Role.tenant_id == tenant_id) | Role.tenant_id.is_(None)
                 )
             )
