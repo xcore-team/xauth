@@ -28,7 +28,7 @@ def rbac_router(db: Any, cache: Any = None) -> APIRouter:
     )
     async def create_role(
         body: RoleCreate,
-        _: AuthPayload = Depends(require_permission("rbac:write")),
+        _: AuthPayload = Depends(require_permission("role:write")),
     ) -> Any:
         async with db.session() as session:
             role = await _svc(session).create_role(
@@ -63,7 +63,7 @@ def rbac_router(db: Any, cache: Any = None) -> APIRouter:
     async def assign_permission(
         role_id: str,
         body: AssignPermissionRequest,
-        _: AuthPayload = Depends(require_permission("permission:assign")),
+        _: AuthPayload = Depends(require_permission("role:assign")),
     ) -> Any:
         async with db.session() as session:
             try:
