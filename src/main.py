@@ -250,7 +250,7 @@ def _build_oauth_providers(env: dict) -> dict[str, OAuthProvider]:
     Construit le dict provider_name → instance à partir des vars d'env.
     Un provider est activé seulement si BOTH client_id et client_secret sont présents.
     """
-    base_url = env.get("XAUTH_APP_BASE_URL", "http://localhost:8000").rstrip("/")
+    base_url = env.get("XAUTH_APP_BASE_URL", "https://api.xcorehub.dev").rstrip("/")
     providers: dict[str, OAuthProvider] = {}
 
     _registry = [
