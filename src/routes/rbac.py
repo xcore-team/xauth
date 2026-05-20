@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from xcore.kernel.api import AuthPayload
 from xcore.sdk import require_permission
 
-from ..services.rbac import RBACService
 from ..schemas.rbac import (
     AssignPermissionRequest,
     AssignRoleRequest,
@@ -13,6 +12,7 @@ from ..schemas.rbac import (
     RoleCreate,
     RoleResponse,
 )
+from ..services.rbac import RBACService
 
 
 def rbac_router(db: Any, cache: Any = None) -> APIRouter:
@@ -43,7 +43,7 @@ def rbac_router(db: Any, cache: Any = None) -> APIRouter:
     @router.get("/roles", response_model=List[RoleResponse])
     async def list_roles(
         tenant_id: str | None = None,
-        _: AuthPayload = Depends(require_permission("rbac:read")),
+        _: AuthPayload = Depends(require_permission("role:read")),
     ) -> Any:
         async with db.session() as session:
             return await _svc(session).list_roles(tenant_id=tenant_id)
@@ -51,7 +51,7 @@ def rbac_router(db: Any, cache: Any = None) -> APIRouter:
     @router.get("/roles/{role_id}", response_model=RoleResponse)
     async def get_role(
         role_id: str,
-        _: AuthPayload = Depends(require_permission("rbac:read")),
+        _: AuthPayload = Depends(require_permission("role:read")),
     ) -> Any:
         async with db.session() as session:
             role = await _svc(session).get_role(role_id)
@@ -63,7 +63,7 @@ def rbac_router(db: Any, cache: Any = None) -> APIRouter:
     async def assign_permission(
         role_id: str,
         body: AssignPermissionRequest,
-        _: AuthPayload = Depends(require_permission("rbac:write")),
+        _: AuthPayload = Depends(require_permission("permission:assign")),
     ) -> Any:
         async with db.session() as session:
             try:
@@ -83,7 +83,7 @@ def rbac_router(db: Any, cache: Any = None) -> APIRouter:
     async def remove_permission(
         role_id: str,
         permission_id: str,
-        _: AuthPayload = Depends(require_permission("rbac:write")),
+        _: AuthPayload = Depends(require_permission("role:delete")),
     ) -> Any:
         async with db.session() as session:
             try:
@@ -101,7 +101,7 @@ def rbac_router(db: Any, cache: Any = None) -> APIRouter:
         tenant_id: str,
         user_id: str,
         body: AssignRoleRequest,
-        _: AuthPayload = Depends(require_permission("rbac:write")),
+        _: AuthPayload = Depends(require_permission("role:write")),
     ) -> Any:
         async with db.session() as session:
             try:
@@ -120,7 +120,7 @@ def rbac_router(db: Any, cache: Any = None) -> APIRouter:
     )
     async def create_permission(
         body: PermissionCreate,
-        _: AuthPayload = Depends(require_permission("rbac:write")),
+        _: AuthPayload = Depends(require_permission("role:write")),
     ) -> Any:
         async with db.session() as session:
             perm = await _svc(session).create_permission(
@@ -132,7 +132,7 @@ def rbac_router(db: Any, cache: Any = None) -> APIRouter:
 
     @router.get("/permissions", response_model=List[PermissionResponse])
     async def list_permissions(
-        _: AuthPayload = Depends(require_permission("rbac:read")),
+        _: AuthPayload = Depends(require_permission("role:read")),
     ) -> Any:
         async with db.session() as session:
             return await _svc(session).list_permissions()
@@ -144,7 +144,7 @@ def rbac_router(db: Any, cache: Any = None) -> APIRouter:
     async def get_user_permissions(
         user_id: str,
         tenant_id: str,
-        _: AuthPayload = Depends(require_permission("rbac:read")),
+        _: AuthPayload = Depends(require_permission("role:read")),
     ) -> Any:
         async with db.session() as session:
             return await _svc(session).get_permissions_for_user(user_id, tenant_id)

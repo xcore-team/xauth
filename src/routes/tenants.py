@@ -26,7 +26,7 @@ def tenants_router(db: Any) -> APIRouter:
     )
     async def create_tenant(
         body: TenantCreate,
-        _: AuthPayload = Depends(require_permission("tenants:write")),
+        _: AuthPayload = Depends(require_permission("tenant:write")),
     ) -> Any:
         async with db.session() as session:
             repo = TenantRepository(session)
@@ -44,7 +44,7 @@ def tenants_router(db: Any) -> APIRouter:
 
     @router.get("/", response_model=List[TenantResponse])
     async def list_tenants(
-        _: AuthPayload = Depends(require_permission("tenants:read")),
+        _: AuthPayload = Depends(require_permission("tenant:read")),
     ) -> Any:
         async with db.session() as session:
             repo = TenantRepository(session)
@@ -66,7 +66,7 @@ def tenants_router(db: Any) -> APIRouter:
     async def update_tenant(
         tenant_id: str,
         body: TenantUpdate,
-        _: AuthPayload = Depends(require_permission("tenants:write")),
+        _: AuthPayload = Depends(require_permission("tenant:write")),
     ) -> Any:
         async with db.session() as session:
             repo = TenantRepository(session)
@@ -85,7 +85,7 @@ def tenants_router(db: Any) -> APIRouter:
     @router.delete("/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def delete_tenant(
         tenant_id: str,
-        _: AuthPayload = Depends(require_permission("tenants:delete")),
+        _: AuthPayload = Depends(require_permission("tenant:delete")),
     ) -> None:
         async with db.session() as session:
             repo = TenantRepository(session)
@@ -98,7 +98,7 @@ def tenants_router(db: Any) -> APIRouter:
     @router.get("/{tenant_id}/members", response_model=List[MemberResponse])
     async def list_members(
         tenant_id: str,
-        _: AuthPayload = Depends(require_permission("tenants:read")),
+        _: AuthPayload = Depends(require_permission("tenant:read")),
     ) -> Any:
         async with db.session() as session:
             repo = TenantMemberRepository(session)
