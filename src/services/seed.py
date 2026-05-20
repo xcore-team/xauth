@@ -69,8 +69,10 @@ PERMISSIONS: list[tuple[str, str]] = [
     # xpulse — SSE/Pub-Sub
     ("xpulse:publish", "Publier un message ciblé via xpulse"),
     ("xpulse:broadcast", "Broadcaster un message à tous les users via xpulse"),
+    ("invites:write", "Créer une invitation"),
+    ("invites:read", "Lire les invitations"),
+    ("invites:revoke", "Révoquer une invitation"),
 ]
-
 
 
 # Permissions accordées à tout utilisateur inscrit
@@ -106,14 +108,16 @@ async def seed_admin_role(
     session: AsyncSession,
     tenant_id: str | None,
     permissions: dict[str, Permission],
-    schemas:UserRootSchemas,
+    schemas: UserRootSchemas,
 ) -> Role | None:
     """Crée ou récupère le rôle admin global et lui assigne toutes les permissions."""
     role_repo = RoleRepository(session)
 
     # Cherche un rôle admin sans tenant (global)
     existing_roles = await role_repo.list_for_tenant(None)
-    admin_role = next((r for r in existing_roles if r.name == schemas.ADMIN_ROLE_NAME), None)
+    admin_role = next(
+        (r for r in existing_roles if r.name == schemas.ADMIN_ROLE_NAME), None
+    )
 
     if admin_role is None:
         admin_role = Role(
@@ -136,7 +140,9 @@ async def seed_admin_role(
     return admin_role
 
 
-async def seed_default_tenant(session: AsyncSession, schemas:UserRootSchemas) -> Tenant:
+async def seed_default_tenant(
+    session: AsyncSession, schemas: UserRootSchemas
+) -> Tenant:
     """Crée ou récupère le tenant par défaut."""
     repo = TenantRepository(session)
     tenant = await repo.get_by_slug(schemas.ADMIN_TENANT_SLUG)
@@ -148,10 +154,7 @@ async def seed_default_tenant(session: AsyncSession, schemas:UserRootSchemas) ->
 
 
 async def seed_admin_user(
-    session: AsyncSession,
-    tenant: Tenant,
-    admin_role: Role,
-    schemas:UserRootSchemas
+    session: AsyncSession, tenant: Tenant, admin_role: Role, schemas: UserRootSchemas
 ) -> User:
     """Crée l'utilisateur admin s'il n'existe pas encore."""
     user_repo = UserRepository(session)
@@ -183,15 +186,15 @@ async def seed_admin_user(
 
 
 async def seed_user_role(
-    session: AsyncSession,
-    permissions: dict[str, Permission],
-    schemas:UserRootSchemas
+    session: AsyncSession, permissions: dict[str, Permission], schemas: UserRootSchemas
 ) -> Role:
     """Crée ou récupère le rôle user global avec les permissions de base."""
     role_repo = RoleRepository(session)
 
     existing_roles = await role_repo.list_for_tenant(None)
-    user_role = next((r for r in existing_roles if r.name ==schemas. USER_ROLE_NAME), None)
+    user_role = next(
+        (r for r in existing_roles if r.name == schemas.USER_ROLE_NAME), None
+    )
 
     if user_role is None:
         user_role = Role(
@@ -223,11 +226,13 @@ async def get_default_user_role(db: Any) -> Role | None:
         return next((r for r in roles if r.name == USER_ROLE_NAME), None)
 
 
-async def run_seed(db: Any, schemas:UserRootSchemas) -> None:
+async def run_seed(db: Any, schemas: UserRootSchemas) -> None:
     """Point d'entrée principal — appelé depuis Plugin.on_load."""
     async with db.session() as session:
         try:
-            permissions = await seed_permissions(session,)
+            permissions = await seed_permissions(
+                session,
+            )
             tenant = await seed_default_tenant(session, schemas)
             admin_role = await seed_admin_role(session, tenant.id, permissions, schemas)
             await seed_user_role(session, permissions, schemas)

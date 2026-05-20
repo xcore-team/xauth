@@ -6,10 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from xcore.kernel.api import AuthPayload, get_current_user
 from xcore.sdk import require_permission
 
+from ..schemas.invite import AcceptInviteRequest, InviteCreate, InviteResponse
 from ..services.email import AuthEmailService
 from ..services.events import XAuthEvents
 from ..services.invite import InviteService
-from ..schemas.invite import AcceptInviteRequest, InviteCreate, InviteResponse
 
 
 def invites_router(
@@ -19,7 +19,9 @@ def invites_router(
 ) -> APIRouter:
     router = APIRouter(prefix="/invites", tags=["invites"])
 
-    @router.post("/", response_model=InviteResponse, status_code=status.HTTP_201_CREATED)
+    @router.post(
+        "/", response_model=InviteResponse, status_code=status.HTTP_201_CREATED
+    )
     async def create_invite(
         body: InviteCreate,
         user: AuthPayload = Depends(require_permission("invites:write")),
