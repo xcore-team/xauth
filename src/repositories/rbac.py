@@ -17,6 +17,7 @@ class RoleRepository(BaseRepository[Role]):
             select(Role)
             .options(selectinload(Role.permissions))
             .where(Role.id == role_id)
+            .execution_options(populate_existing=True)
         )
         return result.scalar_one_or_none()
 
