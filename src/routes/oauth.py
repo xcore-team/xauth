@@ -95,6 +95,7 @@ def oauth_router(
 
                 redirect_url = result.get("post_login_redirect")
                 if redirect_url:
+                    redirect_url = redirect_url.replace("/v1", "")
                     params = {
                         "access_token": result["access_token"],
                         "refresh_token": result.get("refresh_token", ""),
