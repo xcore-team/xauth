@@ -79,6 +79,7 @@ PERMISSIONS: list[tuple[str, str]] = [
 USER_PERMISSIONS: list[str] = [
     "plugin:list",
     "plugin:read",
+    "plugin:delete",
     "submissions:list",
     "submissions:read",
     "submissions:create",
