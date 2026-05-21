@@ -1,4 +1,4 @@
-from __future__ import annotations
+from __future__ import annotations, print_function
 
 from pathlib import Path
 
@@ -116,6 +116,8 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
 
         # Providers OAuth — construits depuis self.ctx.env
         oauth_providers = _build_oauth_providers(env)
+
+        print(self.ctx.env)
 
         self.app.include_router(
             _auth_router_with_db(
@@ -250,39 +252,39 @@ def _build_oauth_providers(env: dict) -> dict[str, OAuthProvider]:
     Construit le dict provider_name → instance à partir des vars d'env.
     Un provider est activé seulement si BOTH client_id et client_secret sont présents.
     """
-    base_url = env.get("XAUTH_APP_BASE_URL", "https://api.xcorehub.dev").rstrip("/")
+    base_url = env.get("APP_BASE_URL", "https://api.xcorehub.dev").rstrip("/")
     providers: dict[str, OAuthProvider] = {}
 
     _registry = [
         (
             "google",
             GoogleProvider,
-            "OAUTH_GOOGLE_CLIENT_ID",
-            "OAUTH_GOOGLE_CLIENT_SECRET",
+            "XAUTH_OAUTH_GOOGLE_CLIENT_ID",
+            "XAUTH_OAUTH_GOOGLE_CLIENT_SECRET",
         ),
         (
             "github",
             GitHubProvider,
             "OAUTH_GITHUB_CLIENT_ID",
-            "OAUTH_GITHUB_CLIENT_SECRET",
+            "XAUTH_OAUTH_GITHUB_CLIENT_SECRET",
         ),
         (
             "discord",
             DiscordProvider,
-            "OAUTH_DISCORD_CLIENT_ID",
-            "OAUTH_DISCORD_CLIENT_SECRET",
+            "XAUTH_OAUTH_DISCORD_CLIENT_ID",
+            "XAUTH_OAUTH_DISCORD_CLIENT_SECRET",
         ),
         (
             "microsoft",
             MicrosoftProvider,
-            "OAUTH_MICROSOFT_CLIENT_ID",
-            "OAUTH_MICROSOFT_CLIENT_SECRET",
+            "XAUTH_OAUTH_MICROSOFT_CLIENT_ID",
+            "XAUTH_OAUTH_MICROSOFT_CLIENT_SECRET",
         ),
     ]
 
     for name, cls, id_key, secret_key in _registry:
-        client_id = env.get(id_key, "")
-        client_secret = env.get(secret_key, "")
+        client_id = env.get(id_key, "").strip()
+        client_secret = env.get(secret_key, "").strip()
         if client_id and client_secret:
             redirect_uri = f"{base_url}/app/auth/oauth/{name}/callback"
             providers[name] = cls(client_id, client_secret, redirect_uri)
