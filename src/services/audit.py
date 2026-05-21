@@ -48,3 +48,17 @@ class AuditService:
     ) -> list[AuditLog]:
         repo = AuditLogRepository(self._session)
         return await repo.list_for_user(user_id, limit=limit, offset=offset)
+
+    async def list_for_user_paged(
+        self, user_id: str, limit: int = 20, offset: int = 0
+    ) -> dict:
+        repo = AuditLogRepository(self._session)
+        items = await repo.list_for_user(user_id, limit=limit, offset=offset)
+        total = await repo.count_for_user(user_id)
+        return {
+            "items": items,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + limit < total,
+        }

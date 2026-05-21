@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from ..models.audit import AuditLog
 from .base import BaseRepository
@@ -38,3 +38,9 @@ class AuditLogRepository(BaseRepository[AuditLog]):
             .offset(offset)
         )
         return list(result.scalars().all())
+
+    async def count_for_user(self, user_id: str) -> int:
+        result = await self.session.execute(
+            select(func.count()).where(AuditLog.user_id == user_id)
+        )
+        return result.scalar_one()
