@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+
+logger = logging.getLogger("xauth.oauth")
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -108,7 +111,7 @@ class OAuthService:
         user_info = await provider.get_user_info(access_token)
 
         # Find-or-create (stores provider_token on the OAuthAccount)
-        user = await self._find_or_create_user(user_info, provider_token=access_token)
+        user, is_new_user = await self._find_or_create_user(user_info, provider_token=access_token)
 
         # Créer la session xauth (refresh token rotatif)
         refresh_plain = self._token.create_refresh_token()
@@ -139,7 +142,7 @@ class OAuthService:
             "tenant_id": tenant_id,
             "provider": provider_name,
             "provider_token": token_data.get("access_token"),
-            "is_new_user": getattr(user, "_is_new", False),
+            "is_new_user": is_new_user,
             "post_login_redirect": state_data.get("redirect"),
         }
 
@@ -217,7 +220,8 @@ class OAuthService:
 
     async def _find_or_create_user(
         self, info: OAuthUserInfo, provider_token: Optional[str] = None
-    ) -> User:
+    ) -> tuple[User, bool]:
+        """Retourne (user, is_new) — is_new=True si le compte vient d'être créé."""
         oauth_repo = OAuthAccountRepository(self._session)
         user_repo = UserRepository(self._session)
 
@@ -230,7 +234,7 @@ class OAuthService:
             user = await user_repo.get(account.user_id)
             if user:
                 await self._assign_default_role(user.id)
-                return user
+                return user, False
 
         # 2. Chercher un user existant par email
         user = await user_repo.get_by_email(info.email)
@@ -247,11 +251,10 @@ class OAuthService:
             await oauth_repo.save(new_account)
             # S'assurer que ce user a bien un rôle (peut manquer si créé via autre flow)
             await self._assign_default_role(user.id)
-            return user
+            return user, False
 
         # 3. Créer un nouveau user
         user = User(email=info.email, hashed_password=None, is_active=True)
-        user._is_new = True  # flag pour la réponse
         await user_repo.save(user)
 
         new_account = OAuthAccount(
@@ -268,7 +271,7 @@ class OAuthService:
         # Assigner le rôle "user" dans le tenant par défaut
         await self._assign_default_role(user.id)
 
-        return user
+        return user, True
 
     async def _assign_default_role(self, user_id: str) -> None:
         """Crée un TenantMember avec le rôle 'user' global dans le tenant par défaut."""
@@ -294,4 +297,4 @@ class OAuthService:
             )
             await member_repo.save(membership)
         except Exception:
-            pass  # non-bloquant — le user est créé, le rôle peut être assigné manuellement
+            logger.debug("Impossible d'assigner le rôle par défaut à %s", user_id, exc_info=True)

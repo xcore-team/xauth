@@ -117,8 +117,6 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
         # Providers OAuth — construits depuis self.ctx.env
         oauth_providers = _build_oauth_providers(env)
 
-        print(self.ctx.env)
-
         self.app.include_router(
             _auth_router_with_db(
                 db, self._token_service, self._email_service, self._events
@@ -137,8 +135,6 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
         self.app.include_router(
             password_router(db, cache, self._email_service, self._events)
         )
-
-        from .services.seed import run_seed
 
         await run_seed(
             db,

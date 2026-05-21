@@ -53,6 +53,8 @@ allowed_imports:
   - jose
   # HTTP client (OAuth providers)
   - httpx
+  # Encodage URL (urllib.parse.urlencode — pas de connexion réseau)
+  - urllib
   # Templating emails
   - jinja2
   # Hachage mots de passe
