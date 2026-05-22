@@ -218,12 +218,12 @@ async def seed_user_role(
     return user_role_loaded
 
 
-async def get_default_user_role(db: Any) -> Role | None:
+async def get_default_user_role(db: Any, role_name: str = "user") -> Role | None:
     """Retourne le rôle 'user' global — utilisé lors de l'inscription."""
     async with db.session() as session:
         role_repo = RoleRepository(session)
         roles = await role_repo.list_for_tenant(None)
-        return next((r for r in roles if r.name == USER_ROLE_NAME), None)
+        return next((r for r in roles if r.name == role_name), None)
 
 
 async def run_seed(db: Any, schemas: UserRootSchemas) -> None:

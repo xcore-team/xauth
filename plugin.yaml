@@ -39,6 +39,41 @@ env:
   OAUTH_GITHUB_CLIENT_ID: "${XAUTH_OAUTH_GITHUB_CLIENT_ID}"
   XAUTH_OAUTH_GITHUB_CLIENT_SECRET: "${XAUTH_OAUTH_GITHUB_CLIENT_SECRET}"
 
+# ── Imports autorisés ────────────────────────────────────────────────────────
+allowed_imports:
+  # Web framework
+  - fastapi
+  # ORM asyncio
+  - sqlalchemy
+  - asyncpg
+  - aiosqlite
+  # Validation
+  - pydantic
+  # JWT RS256
+  - jose
+  # HTTP client (OAuth providers)
+  - httpx
+  # Encodage URL (urllib.parse.urlencode — pas de connexion réseau)
+  - urllib
+  # Templating emails
+  - jinja2
+  # Hachage mots de passe
+  - passlib
+  # MFA TOTP
+  - pyotp
+  - qrcode
+  # Stdlib
+  - asyncio
+  - datetime
+  - hashlib
+  - json
+  - logging
+  - pathlib
+  - re
+  - secrets
+  - typing
+  - uuid
+
 # ── Permissions inter-plugins ─────────────────────────────────────────────────
 permissions:
   - resource: "registry"

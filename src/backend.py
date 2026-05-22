@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger("xauth.backend")
 
 from xcore.kernel.api.auth import AuthPayload
 
@@ -76,7 +79,7 @@ class XAuthBackend:
                     permissions = await svc.get_permissions_for_user(user_id, tenant_id)
                     roles = await svc.get_roles_for_user(user_id, tenant_id)
         except Exception:
-            pass
+            logger.debug("Failed to load RBAC data for user %s", user_id, exc_info=True)
 
         async with self._db.session() as session:
             user_repo = UserRepository(session)

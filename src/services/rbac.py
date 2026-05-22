@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Optional
+
+logger = logging.getLogger("xauth.rbac")
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -116,7 +119,7 @@ class RBACService:
                 if cached:
                     return json.loads(cached)
             except Exception:
-                pass
+                logger.debug("Cache read error for %s/%s", user_id, tenant_id, exc_info=True)
 
         # Load from DB
         member_repo = TenantMemberRepository(self._session)
@@ -136,7 +139,7 @@ class RBACService:
             try:
                 await self._cache.set(cache_key, json.dumps(permissions), ex=_PERM_CACHE_TTL)
             except Exception:
-                pass
+                logger.debug("Cache write error for %s/%s", user_id, tenant_id, exc_info=True)
 
         return permissions
 
@@ -148,7 +151,6 @@ class RBACService:
             return []
         role_repo = RoleRepository(self._session)
         role = await role_repo.get(membership.role_id)
-        print(',---------------------------> ', role)
         if role is None:
             return []
 
@@ -166,4 +168,4 @@ class RBACService:
             try:
                 await self._cache.delete(cache_key)
             except Exception:
-                pass
+                logger.debug("Cache invalidation error for %s/%s", user_id, tenant_id, exc_info=True)
