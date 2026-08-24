@@ -117,3 +117,24 @@ async def admin_route(_ = Depends(require_permission("plugin:admin"))):
 1. Ensure the `db` and `cache` services are available.
 2. The plugin will automatically create required tables on its first load via `_initialize_tables`.
 3. Default permissions and global roles should be seeded via a bootstrap script (refer to `tasks.md`).
+
+---
+
+## ⚠️ Known security note — transitive `ecdsa` CVE
+
+`requirements.txt` pulls in `python-jose[cryptography]` for JWT handling,
+which transitively installs `ecdsa` — flagged by `pip-audit` for
+**CVE-2024-23342 / GHSA-wj6h-64fc-37mp** (the "Minerva" timing side-channel
+in ECDSA signing). `python-ecdsa`'s maintainers have stated this cannot be
+fixed in pure Python and recommend avoiding the library for
+security-sensitive ECDSA use — there is no patched release.
+
+**Why this plugin isn't directly exposed**: `xauth` only issues/verifies
+JWTs with **RS256** (see `services/token.py`, `jwt/private_key_path` /
+`public_key_path` in `plugin.yaml`) — the vulnerable ECDSA code path in
+`python-jose` is never exercised by this codebase. The package is still
+present in the dependency tree and will keep showing up in `pip-audit`/the
+marketplace supply-chain gate until `python-jose` is replaced (e.g. by
+`PyJWT`, which doesn't depend on `ecdsa`) — tracked as a future
+improvement, not an active exploit path today.
+3. Default permissions and global roles should be seeded via a bootstrap script (refer to `tasks.md`).
