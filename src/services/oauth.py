@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -70,9 +69,21 @@ class OAuthService:
             "tenant_id": tenant_id,
             "redirect": post_login_redirect,
         }
+        # Le backend cache (RedisCacheBackend/MemoryBackend, voir
+        # xcore.services.cache.backends) fait déjà la sérialisation JSON en
+        # interne (.set accepte un dict tel quel) — json.dumps ici avant
+        # .set() encodait un dict en str, que RedisCacheBackend.set()
+        # stockait alors tel quel (déjà une str), MAIS son .get() tente
+        # TOUJOURS un json.loads() sur ce qu'il lit de Redis et réussit
+        # (c'était du JSON valide) → renvoie un dict, pas la str attendue.
+        # handle_callback() ci-dessous refaisait alors json.loads(dict),
+        # qui lève TypeError (pas ValueError) à CHAQUE callback OAuth,
+        # sans exception côté /authorize — 100% reproductible, constaté en
+        # conditions réelles (connexion GitHub systématiquement "annulée ou
+        # échouée" malgré un flow authorize→callback par ailleurs correct).
         await self._cache.set(
             f"{_STATE_KEY_PREFIX}{state}",
-            json.dumps(state_data),
+            state_data,
             ttl=_STATE_TTL,
         )
         return provider.get_auth_url(state)
@@ -88,12 +99,11 @@ class OAuthService:
     ) -> dict[str, Any]:
         # Vérifier et consommer le state CSRF
         state_key = f"{_STATE_KEY_PREFIX}{state}"
-        raw = await self._cache.get(state_key)
-        if raw is None:
+        state_data = await self._cache.get(state_key)
+        if state_data is None:
             raise ValueError("State OAuth invalide ou expiré.")
         await self._cache.delete(state_key)
 
-        state_data = json.loads(raw)
         if state_data.get("provider") != provider_name:
             raise ValueError("State OAuth : provider mismatch.")
 

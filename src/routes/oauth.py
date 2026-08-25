@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
@@ -13,6 +14,8 @@ from xcore.kernel.api import AuthPayload, get_current_user
 from ..providers.base import OAuthProvider
 from ..services.oauth import OAuthService
 from ..services.token import TokenService
+
+_logger = logging.getLogger(__name__)
 
 
 class OAuthLinkRequest(BaseModel):
@@ -126,13 +129,19 @@ def oauth_router(
                 result = await svc.handle_callback(provider, code, state, ip_address=ip)
                 await session.commit()
             except ValueError as exc:
+                # Attendu (state expiré, provider sans email vérifié, …) —
+                # pas de traceback, mais tracé quand même : le navigateur ne
+                # voit qu'un toast générique (voir AuthPage.tsx), c'est ici
+                # qu'il faut regarder pour savoir POURQUOI un callback échoue.
+                _logger.warning("[oauth] callback %s rejeté : %s", provider, exc)
                 return RedirectResponse(
                     f"{default_redirect}?{urlencode({'error': str(exc)})}",
                     status_code=status.HTTP_302_FOUND,
                 )
-            except Exception as exc:
+            except Exception:
+                _logger.exception("[oauth] callback %s : erreur provider inattendue", provider)
                 return RedirectResponse(
-                    f"{default_redirect}?{urlencode({'error': f'Erreur provider : {exc}'})}",
+                    f"{default_redirect}?{urlencode({'error': 'Erreur provider'})}",
                     status_code=status.HTTP_302_FOUND,
                 )
 
