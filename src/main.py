@@ -38,6 +38,7 @@ from .schemas.auth import (
     LogoutRequest,
     RefreshRequest,
     RegisterRequest,
+    SelectTenantRequest,
     SetupCreateRequest,
     SetupJoinRequest,
     TokenResponse,
@@ -280,6 +281,33 @@ def _auth_router_with_db(
             svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
             await svc.logout(body.refresh_token)
             await session.commit()
+
+    @router.post("/select-tenant", response_model=TokenResponse)
+    async def select_tenant(body: SelectTenantRequest, request: Request):
+        """
+        Émet un access token scopé à `tenant_id` à partir d'un refresh_token
+        pas encore scopé (voir OAuthService.handle_callback : plusieurs
+        tenants → onboard-select côté AuthPage.tsx, qui appelle cette route
+        une fois l'utilisateur·rice a choisi). Existait déjà dans
+        routes/auth.py::auth_router — jamais monté nulle part (jamais
+        importé dans ce fichier), seul _auth_router_with_db ci-dessous l'est
+        réellement : la route en était simplement absente ici, d'où le 404
+        constaté en prod malgré un frontend et un AuthService.select_tenant
+        déjà corrects des deux côtés.
+        """
+        ip = _extract_ip(request)
+        async with db.session() as session:
+            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
+            try:
+                result = await svc.select_tenant(
+                    refresh_token=body.refresh_token,
+                    tenant_id=body.tenant_id,
+                    ip_address=ip,
+                )
+                await session.commit()
+                return result
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
 
     @router.post("/setup/create", response_model=TokenResponse)
     async def setup_create(body: SetupCreateRequest, request: Request):
