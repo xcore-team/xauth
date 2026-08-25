@@ -91,6 +91,18 @@ permissions:
     effect: allow
   - resource: network
     description: "Échange de jetons OAuth (Google/GitHub/Discord/Microsoft) via httpx"
+  # Vide = deny_all côté PermissionEngine (même règle que xdevkeys pour son
+  # propre namespace "devkeys.*") — sans cette ligne, les actions IPC
+  # exposées par src/ipc.py (xauth.get_user, xauth.verify_token, xauth.
+  # has_permission, xauth.get_tenant, xauth.create_invite, xauth.log_event)
+  # sont injoignables par tout autre plugin malgré leur présence dans le
+  # code. Constaté en conditions réelles : marketplace.get_plugin appelle
+  # xauth.get_user pour enrichir dev_mail — toujours refusé (permission
+  # denied), la fonctionnalité se dégrade silencieusement (dev_mail jamais
+  # renseigné) au lieu de simplement fonctionner.
+  - resource: "xauth.*"
+    actions: ["*"]
+    effect: allow
 
 # ── Ressources ────────────────────────────────────────────────────────────────
 resources:
