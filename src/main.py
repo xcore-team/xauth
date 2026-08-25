@@ -92,6 +92,19 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
         app_name    = env.get("APP_NAME")    or app_cfg.get("name",     "XAuth")
         app_base_url = env.get("APP_BASE_URL") or app_cfg.get("base_url", "http://localhost:8000")
 
+        # Frontend SPA — voir plugin.yaml (WEB_APP_URL/OAUTH_WEB_REDIRECT_ORIGINS)
+        # pour pourquoi ces deux-là existent. Pas de fallback vers app_base_url :
+        # frontend et API sont deux origines distinctes en prod (marketplace.
+        # xcorehub.dev vs api.xcorehub.dev), un mauvais fallback silencieux ici
+        # renverrait le navigateur vers l'API elle-même en fin de flow OAuth —
+        # exactement le bug que ce fix corrige.
+        web_app_url = env.get("WEB_APP_URL") or app_base_url
+        oauth_redirect_origins = [
+            o.strip().rstrip("/")
+            for o in (env.get("OAUTH_WEB_REDIRECT_ORIGINS") or web_app_url).replace(",", " ").split()
+            if o.strip()
+        ]
+
         private_key  = env.get("JWT_PRIVATE_KEY_PATH") or jwt_cfg.get("private_key_path",  "conf/private.pem")
         public_key   = env.get("JWT_PUBLIC_KEY_PATH")  or jwt_cfg.get("public_key_path",   "conf/public.pem")
         access_exp   = int(env.get("JWT_ACCESS_EXPIRE_MINUTES") or jwt_cfg.get("access_expire_minutes", 15))
@@ -133,7 +146,16 @@ class Plugin(IPCCommands, AutoDispatchMixin, TrustedBase):
         self.app.include_router(mfa_router(db))
         self.app.include_router(invites_router(db, self._email_service, self._events))
         self.app.include_router(audit_router(db))
-        self.app.include_router(oauth_router(db, cache, self._token_service, oauth_providers))
+        self.app.include_router(
+            oauth_router(
+                db,
+                cache,
+                self._token_service,
+                oauth_providers,
+                web_app_url=web_app_url,
+                redirect_origins=oauth_redirect_origins,
+            )
+        )
         self.app.include_router(password_router(db, cache, self._email_service, self._events))
         self.app.include_router(sessions_router(db, self._token_service, cache=cache))
         self.app.include_router(admin_router(db, cache=cache, token_service=self._token_service))

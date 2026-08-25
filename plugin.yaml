@@ -73,6 +73,17 @@ env:
   APP_BASE_URL: "${XAUTH_APP_BASE_URL}"
   APP_NAME: "${XAUTH_APP_NAME}"
 
+  # Frontend SPA (marketplace.xcorehub.dev) — cible du redirect navigateur
+  # à la fin du flow OAuth (voir routes/oauth.py::callback). Sans ça, le
+  # callback n'a nulle part où renvoyer le navigateur et retombe sur le
+  # host API lui-même (voir _default_redirect). WEB_REDIRECT_ORIGINS est
+  # l'allowlist d'origines pour le paramètre ?redirect= envoyé par le
+  # frontend (authApi.oauthUrl) — sans elle, n'importe quel appelant
+  # pourrait faire rediriger le navigateur (avec les tokens fraîchement
+  # émis en query string) vers un domaine arbitraire (open redirect).
+  WEB_APP_URL: "${XAUTH_WEB_APP_URL}"
+  OAUTH_WEB_REDIRECT_ORIGINS: "${XAUTH_OAUTH_WEB_REDIRECT_ORIGINS}"
+
 
   # OAuth providers — secrets, toujours via env
   OAUTH_GOOGLE_CLIENT_ID: "${XAUTH_OAUTH_GOOGLE_CLIENT_ID}"
