@@ -353,7 +353,13 @@ def _build_oauth_providers(env: dict, base_url: str = "http://localhost:8000") -
         client_id = env.get(id_key, "")
         client_secret = env.get(secret_key, "")
         if client_id and client_secret:
-            redirect_uri = f"{base_url}/xauth/oauth/{name}/callback"
+            # Le plugin est monté à /app/auth (plugin_prefix "/app" +
+            # nom de répertoire "auth", voir intégration.yaml et les logs
+            # de boot : "plugin routes mounted plugin=auth ... prefix=
+            # /app/auth"), PAS /xauth — écart constaté en conditions
+            # réelles : GitHub redirigeait vers une URL 404 (callback
+            # jamais monté à ce chemin), OAuth cassé de bout en bout.
+            redirect_uri = f"{base_url}/app/auth/oauth/{name}/callback"
             providers[name] = cls(client_id, client_secret, redirect_uri)
 
     return providers
