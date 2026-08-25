@@ -24,6 +24,10 @@ class SelectTenantRequest(BaseModel):
     refresh_token: str
     tenant_id: str
 
+class VerifyMfaLoginRequest(BaseModel):
+    mfa_token: str
+    code: str
+
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
@@ -61,6 +65,11 @@ class TokenResponse(BaseModel):
     user_id: Optional[str] = None
     tenant_id: Optional[str] = None
     mfa_required: bool = False
+    # Jeton court (5 min), à usage unique, distinct du refresh_token — présent
+    # uniquement si mfa_required=true. Corrèle l'appel à /auth/mfa/verify-login
+    # sans jamais faire circuler un refresh_token utilisable (donc exploitable
+    # via /auth/refresh) avant que le code TOTP ne soit vérifié.
+    mfa_token: Optional[str] = None
     needs_tenant_setup: bool = False  # ← true si l'user n'appartient à aucun tenant
     tenants: Optional[list[TenantInfo]] = None  # ← présent uniquement si multi-tenant
 

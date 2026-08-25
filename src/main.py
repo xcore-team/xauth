@@ -43,6 +43,7 @@ from .schemas.auth import (
     SetupJoinRequest,
     TokenResponse,
     UserResponse,
+    VerifyMfaLoginRequest,
 )
 from .services.auth import AuthService
 from .services.email import AuthEmailService
@@ -254,6 +255,29 @@ def _auth_router_with_db(
                     email=body.email,
                     password=body.password,
                     tenant_id=body.tenant_id,
+                    ip_address=ip,
+                )
+                await session.commit()
+                return result
+            except ValueError as exc:
+                raise HTTPException(status_code=401, detail=str(exc))
+
+    @router.post("/mfa/verify-login", response_model=TokenResponse)
+    async def verify_mfa_login(body: VerifyMfaLoginRequest, request: Request):
+        """
+        Deuxième étape du login mot de passe quand MFA est activé — voir
+        AuthService._finalize_login (émission du mfa_token) et
+        .verify_mfa_login (vérification + émission des vrais tokens ici
+        seulement). login() ne renvoie plus de refresh_token exploitable
+        tant que ce code n'est pas validé.
+        """
+        ip = _extract_ip(request)
+        async with db.session() as session:
+            svc = AuthService(session, token_service, events, cache=cache, user_role_name=user_role_name, admin_role_name=admin_role_name)
+            try:
+                result = await svc.verify_mfa_login(
+                    mfa_token=body.mfa_token,
+                    code=body.code,
                     ip_address=ip,
                 )
                 await session.commit()

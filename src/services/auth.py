@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -20,6 +21,8 @@ from .events import XAuthEvents
 from .token import TokenService
 
 _JTI_BLACKLIST_PREFIX = "xauth:jti_bl:"
+_MFA_LOGIN_TOKEN_PREFIX = "xauth:mfa:login:"
+_MFA_LOGIN_TOKEN_TTL = 300  # 5 min — assez pour taper un code TOTP sans devoir tout ressaisir
 
 
 def _get_password_context():
@@ -311,35 +314,27 @@ class AuthService:
             if membership is None:
                 raise ValueError("User is not a member of this tenant")
 
-        # ── Flow normal : émission des tokens ─────────────────────────────────────
+        return await self._finalize_login(user, tenant_id, ip_address, device_fingerprint)
+
+    async def _issue_tokens(
+        self,
+        user: User,
+        tenant_id: Optional[str],
+        ip_address: Optional[str] = None,
+        device_fingerprint: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Émet un access_token + refresh_token réels et crée la Session — SEUL
+        point d'émission de tokens définitifs. À n'appeler qu'une fois le
+        login entièrement complété (MFA vérifié si user.mfa_enabled) : voir
+        _finalize_login, le seul appelant légitime en dehors de
+        verify_mfa_login.
+        """
         refresh_token_plain = self._token.create_refresh_token()
         refresh_token_hashed = self._token.hash_token(refresh_token_plain)
-        session_repo = SessionRepository(self._session)
-
-        # Si MFA activé → pas d'access token, on attend la vérification TOTP
-        if user.mfa_enabled:
-            session = Session(
-                user_id=user.id,
-                tenant_id=tenant_id,
-                refresh_token=refresh_token_hashed,
-                device_fingerprint=device_fingerprint,
-                ip_address=ip_address,
-                expires_at=datetime.now(tz=timezone.utc)
-                + timedelta(days=self._token._refresh_expire),
-            )
-            await session_repo.save(session)
-            return {
-                "access_token": "",
-                "refresh_token": refresh_token_plain,
-                "token_type": "bearer",
-                "user_id": user.id,
-                "tenant_id": tenant_id,
-                "mfa_required": True,
-                "tenants": None,
-            }
-
         access_token, jti = self._token.create_access_token(user_id=user.id, tenant_id=tenant_id)
 
+        session_repo = SessionRepository(self._session)
         session = Session(
             user_id=user.id,
             tenant_id=tenant_id,
@@ -352,7 +347,7 @@ class AuthService:
         )
         await session_repo.save(session)
 
-        await audit.log_event(
+        await AuditService(self._session).log_event(
             action="login.success",
             user_id=user.id,
             tenant_id=tenant_id,
@@ -374,6 +369,100 @@ class AuthService:
             "mfa_required": False,
             "tenants": None,
         }
+
+    async def _finalize_login(
+        self,
+        user: User,
+        tenant_id: Optional[str],
+        ip_address: Optional[str] = None,
+        device_fingerprint: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Point de passage obligé une fois le tenant résolu à une valeur
+        concrète (login mono-tenant, select_tenant) — c'est ICI que MFA doit
+        bloquer, avant tout token. Émettre un refresh_token réel puis
+        vérifier MFA après coup (comportement précédent, voir historique de
+        login()) permettait de contourner MFA entièrement : ce refresh_token
+        était utilisable tel quel via /auth/refresh, qui ne vérifie jamais
+        MFA — la vérification TOTP n'était alors qu'une formalité que
+        n'importe quel appelant direct de l'API pouvait simplement sauter.
+        """
+        if not user.mfa_enabled:
+            return await self._issue_tokens(user, tenant_id, ip_address, device_fingerprint)
+
+        if not self._cache:
+            # Ne devrait pas arriver en prod (cache toujours injecté) —
+            # échouer fort plutôt que de laisser passer sans MFA faute de
+            # pouvoir stocker le jeton de corrélation.
+            raise ValueError("MFA temporairement indisponible — réessayez.")
+
+        mfa_token = secrets.token_urlsafe(32)
+        await self._cache.set(
+            f"{_MFA_LOGIN_TOKEN_PREFIX}{mfa_token}",
+            {
+                "user_id": user.id,
+                "tenant_id": tenant_id,
+                "device_fingerprint": device_fingerprint,
+            },
+            ttl=_MFA_LOGIN_TOKEN_TTL,
+        )
+        await AuditService(self._session).log_event(
+            action="login.mfa_required",
+            user_id=user.id,
+            tenant_id=tenant_id,
+            ip_address=ip_address,
+        )
+        return {
+            "access_token": "",
+            "refresh_token": "",
+            "token_type": "bearer",
+            "user_id": user.id,
+            "tenant_id": tenant_id,
+            "mfa_required": True,
+            "mfa_token": mfa_token,
+            "tenants": None,
+        }
+
+    async def verify_mfa_login(
+        self,
+        mfa_token: str,
+        code: str,
+        ip_address: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Deuxième étape du login MFA — voir _finalize_login pour l'émission
+        du mfa_token. Vérifie le code TOTP (ou backup code) et n'émet de
+        vrais tokens qu'à ce moment-là.
+        """
+        if not self._cache:
+            raise ValueError("MFA temporairement indisponible — réessayez.")
+
+        key = f"{_MFA_LOGIN_TOKEN_PREFIX}{mfa_token}"
+        pending = await self._cache.get(key)
+        if pending is None:
+            raise ValueError("Token MFA invalide ou expiré — reconnectez-vous.")
+
+        from .mfa import MFAService
+
+        if not await MFAService(self._session).verify_totp(pending["user_id"], code):
+            raise ValueError("Code MFA invalide.")
+
+        # Usage unique — invalidé dès que le code est bon, pas avant (un
+        # essai raté ne doit pas forcer à tout recommencer dans la fenêtre
+        # de _MFA_LOGIN_TOKEN_TTL).
+        await self._cache.delete(key)
+
+        user_repo = UserRepository(self._session)
+        user = await user_repo.get(pending["user_id"])
+        if user is None or not user.is_active:
+            raise ValueError("Compte introuvable ou désactivé.")
+
+        return await self._issue_tokens(
+            user,
+            pending.get("tenant_id"),
+            ip_address,
+            pending.get("device_fingerprint"),
+        )
 
 
     async def select_tenant(
@@ -408,6 +497,23 @@ class AuthService:
         if membership is None:
             raise ValueError("User is not a member of this tenant")
 
+        user_repo = UserRepository(self._session)
+        user = await user_repo.get(session.user_id)
+        if user is None:
+            raise ValueError("User not found")
+
+        if user.mfa_enabled:
+            # Ne scope PAS cette session existante avant vérification MFA —
+            # même raisonnement que dans _finalize_login (login mono-tenant) :
+            # un compte multi-tenant avec MFA activé passait par cette
+            # branche sans jamais croiser le moindre contrôle MFA (select_
+            # tenant ne le vérifiait pas du tout). _finalize_login crée une
+            # nouvelle session dédiée une fois le code TOTP confirmé, celle-ci
+            # (non scopée) reste valable pour retenter un select-tenant.
+            return await self._finalize_login(
+                user, tenant_id, ip_address, session.device_fingerprint
+            )
+
         # Mise à jour de la session avec le tenant choisi
         access_token, jti = self._token.create_access_token(
             user_id=session.user_id, tenant_id=tenant_id
@@ -419,7 +525,7 @@ class AuthService:
         if self._events:
             await self._events.user_login(
                 user_id=session.user_id,
-                email="",
+                email=user.email,
                 ip=ip_address,
                 tenant_id=tenant_id,
             )
@@ -430,54 +536,6 @@ class AuthService:
             "token_type": "bearer",
             "user_id": session.user_id,
             "tenant_id": tenant_id,
-            "mfa_required": False,
-            "tenants": None,
-        }
-
-    async def verify_mfa_and_issue_token(
-        self,
-        refresh_token: str,
-        totp_code: str,
-        ip_address: Optional[str] = None,
-    ) -> dict[str, Any]:
-        """
-        Vérifie le code TOTP (ou backup code) après un login avec MFA activé.
-        Émet l'access token uniquement si le code est valide.
-        """
-        hashed = self._token.hash_token(refresh_token)
-        session_repo = SessionRepository(self._session)
-        session = await session_repo.get_by_refresh_token(hashed)
-
-        if session is None:
-            raise ValueError("Invalid or expired refresh token")
-
-        now = datetime.now(tz=timezone.utc)
-        expires = session.expires_at
-        if expires.tzinfo is None:
-            expires = expires.replace(tzinfo=timezone.utc)
-        if expires < now:
-            session.is_revoked = True
-            await self._session.flush()
-            raise ValueError("Refresh token expired")
-
-        from .mfa import MFAService
-        mfa_svc = MFAService(self._session)
-        valid = await mfa_svc.verify_totp(session.user_id, totp_code)
-        if not valid:
-            raise ValueError("Invalid MFA code")
-
-        access_token, jti = self._token.create_access_token(
-            user_id=session.user_id, tenant_id=session.tenant_id
-        )
-        session.last_jti = jti
-        await self._session.flush()
-
-        return {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "token_type": "bearer",
-            "user_id": session.user_id,
-            "tenant_id": session.tenant_id,
             "mfa_required": False,
             "tenants": None,
         }

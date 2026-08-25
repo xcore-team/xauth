@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from typing import Any, List
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from xcore.kernel.api import AuthPayload, get_current_user
 
 from ..repositories.session import SessionRepository
-from ..services.auth import AuthService
 from ..services.token import TokenService
 
 
@@ -23,39 +22,17 @@ class SessionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class VerifyMFARequest(BaseModel):
-    refresh_token: str
-    code: str
-
-
 def sessions_router(db: Any, token_service: TokenService, cache: Any = None) -> APIRouter:
     router = APIRouter(tags=["sessions"])
 
-    def _extract_ip(request: Request) -> str:
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-        return request.client.host if request.client else "unknown"
-
-    @router.post("/auth/verify-mfa")
-    async def verify_mfa(body: VerifyMFARequest, request: Request) -> Any:
-        """
-        Deuxième étape du login MFA.
-        Soumet le code TOTP (ou backup code) pour obtenir l'access token.
-        """
-        ip = _extract_ip(request)
-        async with db.session() as session:
-            svc = AuthService(session, token_service, cache=cache)
-            try:
-                result = await svc.verify_mfa_and_issue_token(
-                    refresh_token=body.refresh_token,
-                    totp_code=body.code,
-                    ip_address=ip,
-                )
-                await session.commit()
-                return result
-            except ValueError as exc:
-                raise HTTPException(status_code=401, detail=str(exc))
+    # L'ancien POST /auth/verify-mfa (→ AuthService.verify_mfa_and_issue_token)
+    # a été retiré : il prenait le refresh_token lui-même comme jeton de
+    # corrélation MFA, alors que login() l'émet AVANT toute vérification —
+    # ce refresh_token était donc utilisable tel quel via /auth/refresh
+    # (qui ne vérifie jamais MFA) pour contourner MFA entièrement. Remplacé
+    # par POST /auth/mfa/verify-login (main.py::_auth_router_with_db), qui
+    # corrèle via un mfa_token dédié à usage unique — voir AuthService.
+    # _finalize_login / verify_mfa_login.
 
     @router.get("/auth/sessions", response_model=List[SessionResponse])
     async def list_sessions(
